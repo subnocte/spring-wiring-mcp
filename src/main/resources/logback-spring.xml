@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  File-only logging: stdout carries the JSON-RPC stream in stdio transport, so no
+  console appender is defined at all. LOG_FILE is populated from logging.file.name.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <property name="LOG_FILE" value="${LOG_FILE:-logs/spring-wiring-mcp.log}"/>
+    <include resource="org/springframework/boot/logging/logback/file-appender.xml"/>
+    <root level="INFO">
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>
