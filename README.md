@@ -27,7 +27,9 @@ When there's no exact match, it returns the closest candidates instead of an emp
 
 ## Installation
 
-Requires Java 21. Build the executable jar with the bundled Gradle wrapper:
+Requires Java 21. The server itself runs on Spring Boot 4.1 with Spring AI 2.0 (MCP Server starter), but that only concerns the server's own runtime — the codebase being analyzed is parsed as plain source with JavaParser, so Spring Boot 3.x (or any Spring MVC) projects are perfectly valid analysis targets.
+
+Build the executable jar with the bundled Gradle wrapper:
 
 ```bash
 ./gradlew bootJar
