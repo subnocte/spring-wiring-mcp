@@ -244,7 +244,7 @@ public final class EndpointIndex {
 
     private static int suggestionScore(EndpointHandler handler, String method, String requestPath) {
         int methodPenalty = methodMatches(handler.httpMethod(), method) ? 0 : 1000;
-        return methodPenalty + levenshtein(handler.pathPattern(), requestPath);
+        return methodPenalty + segmentDistance(splitSegments(handler.pathPattern()), splitSegments(requestPath));
     }
 
     private static boolean methodMatches(String indexedMethod, String requestedMethod) {
@@ -273,22 +273,30 @@ public final class EndpointIndex {
         return trimmed.isEmpty() ? new String[0] : trimmed.substring(1).split("/");
     }
 
-    private static int levenshtein(String a, String b) {
-        int[] prev = new int[b.length() + 1];
-        int[] curr = new int[b.length() + 1];
-        for (int j = 0; j <= b.length(); j++) {
+    /**
+     * Edit distance between two path-segment sequences, treating a {@code {var}} pattern
+     * segment as a free match against any concrete segment. This ranks near-misses (wrong
+     * literal segment, missing/extra segment) sensibly for "did you mean" suggestions,
+     * without letting brace characters in variable segments skew a plain character-level diff.
+     */
+    private static int segmentDistance(String[] patternSegments, String[] pathSegments) {
+        int[] prev = new int[pathSegments.length + 1];
+        int[] curr = new int[pathSegments.length + 1];
+        for (int j = 0; j <= pathSegments.length; j++) {
             prev[j] = j;
         }
-        for (int i = 1; i <= a.length(); i++) {
+        for (int i = 1; i <= patternSegments.length; i++) {
             curr[0] = i;
-            for (int j = 1; j <= b.length(); j++) {
-                int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
+            String ps = patternSegments[i - 1];
+            boolean isVariable = ps.startsWith("{") && ps.endsWith("}");
+            for (int j = 1; j <= pathSegments.length; j++) {
+                int cost = (isVariable || ps.equals(pathSegments[j - 1])) ? 0 : 1;
                 curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
             }
             int[] tmp = prev;
             prev = curr;
             curr = tmp;
         }
-        return prev[b.length()];
+        return prev[pathSegments.length];
     }
 }
