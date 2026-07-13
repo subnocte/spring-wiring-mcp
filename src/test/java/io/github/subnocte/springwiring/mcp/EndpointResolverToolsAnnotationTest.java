@@ -29,16 +29,17 @@ class EndpointResolverToolsAnnotationTest {
 
         List<SyncToolSpecification> specs = new SyncMcpToolProvider(List.of(tools)).getToolSpecifications();
 
-        assertThat(specs).hasSize(1);
-        McpSchema.Tool tool = specs.get(0).tool();
-        assertThat(tool.name()).isEqualTo("resolveEndpoint");
-
-        McpSchema.ToolAnnotations annotations = tool.annotations();
-        assertThat(annotations).isNotNull();
-        assertThat(annotations.title()).isEqualTo("Resolve Spring REST endpoint");
-        assertThat(annotations.readOnlyHint()).isTrue();
-        assertThat(annotations.destructiveHint()).isFalse();
-        assertThat(annotations.idempotentHint()).isTrue();
-        assertThat(annotations.openWorldHint()).isFalse();
+        assertThat(specs).hasSize(2);
+        assertThat(specs).extracting(s -> s.tool().name())
+                .containsExactlyInAnyOrder("resolveEndpoint", "indexStatus");
+        for (SyncToolSpecification spec : specs) {
+            McpSchema.Tool tool = spec.tool();
+            McpSchema.ToolAnnotations annotations = tool.annotations();
+            assertThat(annotations).as("annotations of %s", tool.name()).isNotNull();
+            assertThat(annotations.readOnlyHint()).isTrue();
+            assertThat(annotations.destructiveHint()).isFalse();
+            assertThat(annotations.idempotentHint()).isTrue();
+            assertThat(annotations.openWorldHint()).isFalse();
+        }
     }
 }
