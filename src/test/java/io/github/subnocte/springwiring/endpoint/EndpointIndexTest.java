@@ -94,4 +94,16 @@ class EndpointIndexTest {
     void allReturnsEveryIndexedEndpoint() {
         assertThat(index.all()).hasSizeGreaterThanOrEqualTo(10);
     }
+
+    @org.junit.jupiter.api.Test
+    void literalSegmentWinsOverPathVariableRegardlessOfDeclarationOrder() {
+        // SpecificityController declares /{id} before /special; Spring picks the literal.
+        var special = index.resolve("GET", "/items/special");
+        assertThat(special).isPresent();
+        assertThat(special.get().methodName()).isEqualTo("special");
+
+        var byId = index.resolve("GET", "/items/123");
+        assertThat(byId).isPresent();
+        assertThat(byId.get().methodName()).isEqualTo("byId");
+    }
 }

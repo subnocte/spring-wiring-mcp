@@ -229,7 +229,20 @@ public final class EndpointIndex {
         return handlers.stream()
                 .filter(h -> methodMatches(h.httpMethod(), method))
                 .filter(h -> pathMatches(h.pathPattern(), requestPath))
-                .findFirst();
+                // Spring picks the most specific of several matching patterns
+                // (e.g. /owners/new beats /owners/{ownerId}); approximate that by
+                // preferring the pattern with the fewest variable segments.
+                .min(Comparator.comparingInt(h -> variableSegmentCount(h.pathPattern())));
+    }
+
+    private static int variableSegmentCount(String pattern) {
+        int count = 0;
+        for (String segment : splitSegments(pattern)) {
+            if (segment.startsWith("{") && segment.endsWith("}")) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** Returns endpoints ranked by similarity to the given (method, path), for "did you mean" suggestions. */
