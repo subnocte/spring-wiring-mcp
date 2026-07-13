@@ -9,6 +9,7 @@ import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MemberValuePair;
+import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.NormalAnnotationExpr;
 import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
@@ -28,7 +29,11 @@ import java.util.Set;
  * {@code (HTTP method, path pattern)} to the handler method that implements it.
  *
  * <p>Built once from a set of {@code .java} source files via JavaParser. Source-only:
- * no compilation or classpath resolution is performed.
+ * no compilation or classpath resolution is performed. Mappings that cannot be resolved
+ * statically (constant-referenced paths, unsupported wildcard patterns, non-literal
+ * expressions) are never indexed under a guessed value — they are collected as
+ * {@link UnresolvedMapping} and exposed via {@link #unresolved()} so clients can see
+ * exactly what the index does not cover.
  */
 public final class EndpointIndex {
 
@@ -49,9 +54,13 @@ public final class EndpointIndex {
     public static final String ANY_METHOD = "ANY";
 
     private final List<EndpointHandler> handlers;
+    private final List<UnresolvedMapping> unresolved;
+    private final int scannedFileCount;
 
-    private EndpointIndex(List<EndpointHandler> handlers) {
+    private EndpointIndex(List<EndpointHandler> handlers, List<UnresolvedMapping> unresolved, int scannedFileCount) {
         this.handlers = List.copyOf(handlers);
+        this.unresolved = List.copyOf(unresolved);
+        this.scannedFileCount = scannedFileCount;
     }
 
     /** Scans {@code root} recursively and builds an index from every {@code .java} file found. */
@@ -62,20 +71,22 @@ public final class EndpointIndex {
     /** Builds an index from an explicit list of source files. Files that fail to parse are skipped. */
     public static EndpointIndex build(List<Path> sourceFiles) {
         List<EndpointHandler> collected = new ArrayList<>();
+        List<UnresolvedMapping> unresolvedCollected = new ArrayList<>();
         for (Path file : sourceFiles) {
             try {
                 CompilationUnit cu = StaticJavaParser.parse(file);
-                collectFromCompilationUnit(cu, file, collected);
+                collectFromCompilationUnit(cu, file, collected, unresolvedCollected);
             } catch (IOException e) {
                 throw new UncheckedIOException("Failed to read source file: " + file, e);
             } catch (com.github.javaparser.ParseProblemException e) {
                 // Skip unparsable files; a single malformed file should not abort the whole index.
             }
         }
-        return new EndpointIndex(collected);
+        return new EndpointIndex(collected, unresolvedCollected, sourceFiles.size());
     }
 
-    private static void collectFromCompilationUnit(CompilationUnit cu, Path file, List<EndpointHandler> out) {
+    private static void collectFromCompilationUnit(
+            CompilationUnit cu, Path file, List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
         cu.accept(new VoidVisitorAdapter<Void>() {
             @Override
             public void visit(ClassOrInterfaceDeclaration decl, Void arg) {
@@ -84,31 +95,73 @@ public final class EndpointIndex {
                     return;
                 }
                 String fqcn = decl.getFullyQualifiedName().orElse(decl.getNameAsString());
-                List<String> basePaths = classLevelPaths(decl);
+
+                Optional<AnnotationExpr> classMapping = decl.getAnnotations().stream()
+                        .filter(a -> a.getNameAsString().equals("RequestMapping"))
+                        .findFirst();
+                PathAttr baseAttr = classMapping.map(EndpointIndex::extractPathAttr)
+                        .orElse(new PathAttr(List.of(""), null));
+                if (baseAttr.nonLiteral() != null) {
+                    unresolvedOut.add(new UnresolvedMapping(
+                            file.toString(),
+                            classMapping.flatMap(a -> a.getBegin()).map(p -> p.line).orElse(-1),
+                            fqcn,
+                            reasonFor(baseAttr.nonLiteral())));
+                    if (baseAttr.literals().isEmpty()) {
+                        // Base path unknown: indexing method paths would produce wrong patterns.
+                        return;
+                    }
+                }
 
                 for (MethodDeclaration method : decl.getMethods()) {
                     for (AnnotationExpr mapping : method.getAnnotations()) {
-                        String simpleName = mapping.getNameAsString();
-                        List<String> httpMethods = resolveHttpMethods(mapping, simpleName);
-                        if (httpMethods.isEmpty()) {
-                            continue;
-                        }
-                        List<String> methodPaths = extractPaths(mapping);
-                        int line = method.getBegin().map(p -> p.line).orElse(-1);
-                        for (String base : basePaths) {
-                            for (String methodPath : methodPaths) {
-                                String pattern = combine(base, methodPath);
-                                for (String httpMethod : httpMethods) {
-                                    out.add(new EndpointHandler(
-                                            httpMethod, pattern, fqcn, method.getNameAsString(),
-                                            file.toString(), line));
-                                }
-                            }
-                        }
+                        collectMethodMapping(mapping, method, fqcn, baseAttr.literals(), file, out, unresolvedOut);
                     }
                 }
             }
         }, null);
+    }
+
+    private static void collectMethodMapping(
+            AnnotationExpr mapping, MethodDeclaration method, String fqcn, List<String> basePaths,
+            Path file, List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
+        String simpleName = mapping.getNameAsString();
+        if (!SHORTHAND_MAPPINGS.containsKey(simpleName) && !simpleName.equals("RequestMapping")) {
+            return;
+        }
+        String location = fqcn + "#" + method.getNameAsString();
+        int line = method.getBegin().map(p -> p.line).orElse(-1);
+
+        HttpMethodsAttr methodsAttr = resolveHttpMethods(mapping, simpleName);
+        if (methodsAttr.nonLiteral() != null) {
+            unresolvedOut.add(new UnresolvedMapping(
+                    file.toString(), line, location, reasonFor(methodsAttr.nonLiteral())));
+            return;
+        }
+
+        PathAttr pathAttr = extractPathAttr(mapping);
+        if (pathAttr.nonLiteral() != null) {
+            unresolvedOut.add(new UnresolvedMapping(
+                    file.toString(), line, location, reasonFor(pathAttr.nonLiteral())));
+            if (pathAttr.literals().isEmpty()) {
+                return;
+            }
+        }
+
+        for (String base : basePaths) {
+            for (String methodPath : pathAttr.literals()) {
+                String pattern = combine(base, methodPath);
+                if (pattern.contains("*")) {
+                    unresolvedOut.add(new UnresolvedMapping(
+                            file.toString(), line, location, UnresolvedMapping.REASON_UNSUPPORTED_PATTERN));
+                    continue;
+                }
+                for (String httpMethod : methodsAttr.methods()) {
+                    out.add(new EndpointHandler(
+                            httpMethod, pattern, fqcn, method.getNameAsString(), file.toString(), line));
+                }
+            }
+        }
     }
 
     private static boolean isController(ClassOrInterfaceDeclaration decl) {
@@ -117,60 +170,96 @@ public final class EndpointIndex {
                 .anyMatch(CONTROLLER_ANNOTATIONS::contains);
     }
 
-    private static List<String> classLevelPaths(ClassOrInterfaceDeclaration decl) {
-        return decl.getAnnotations().stream()
-                .filter(a -> a.getNameAsString().equals("RequestMapping"))
-                .findFirst()
-                .map(EndpointIndex::extractPaths)
-                .orElse(List.of(""));
+    /** Classifies a non-literal attribute expression for unresolved reporting. */
+    private static String reasonFor(Expression expr) {
+        if (expr instanceof NameExpr || expr instanceof FieldAccessExpr) {
+            return UnresolvedMapping.REASON_CONSTANT_REFERENCE;
+        }
+        return UnresolvedMapping.REASON_NON_LITERAL_EXPRESSION;
     }
 
-    /** Determines which HTTP methods a mapping annotation applies to; empty if it is not a mapping annotation. */
-    private static List<String> resolveHttpMethods(AnnotationExpr mapping, String simpleName) {
+    /**
+     * Extracted HTTP methods of a mapping annotation. {@code nonLiteral} is non-null when a
+     * {@code method} attribute was present but no value could be extracted from it.
+     */
+    private record HttpMethodsAttr(List<String> methods, Expression nonLiteral) {
+    }
+
+    private static HttpMethodsAttr resolveHttpMethods(AnnotationExpr mapping, String simpleName) {
         if (SHORTHAND_MAPPINGS.containsKey(simpleName)) {
-            return List.of(SHORTHAND_MAPPINGS.get(simpleName));
-        }
-        if (!simpleName.equals("RequestMapping")) {
-            return List.of();
+            return new HttpMethodsAttr(List.of(SHORTHAND_MAPPINGS.get(simpleName)), null);
         }
         if (!(mapping instanceof NormalAnnotationExpr normal)) {
-            return List.of(ANY_METHOD);
+            return new HttpMethodsAttr(List.of(ANY_METHOD), null);
         }
         for (MemberValuePair pair : normal.getPairs()) {
             if (pair.getNameAsString().equals("method")) {
                 List<String> methods = expressionValues(pair.getValue(), EndpointIndex::fieldAccessName);
-                return methods.isEmpty() ? List.of(ANY_METHOD) : methods;
+                if (methods.isEmpty()) {
+                    return new HttpMethodsAttr(List.of(), firstExpression(pair.getValue()));
+                }
+                return new HttpMethodsAttr(methods, null);
             }
         }
-        return List.of(ANY_METHOD);
+        return new HttpMethodsAttr(List.of(ANY_METHOD), null);
     }
 
     private static String fieldAccessName(Expression expr) {
         return expr instanceof FieldAccessExpr fae ? fae.getNameAsString() : null;
     }
 
-    /** Extracts {@code value}/{@code path} attribute of a mapping annotation; {@code [""]} when absent. */
-    private static List<String> extractPaths(AnnotationExpr anno) {
+    /**
+     * Extracted {@code value}/{@code path} attribute of a mapping annotation. {@code literals}
+     * holds the string literals found ({@code [""]} when the attribute is absent);
+     * {@code nonLiteral} is a sample of any component that could not be extracted.
+     */
+    private record PathAttr(List<String> literals, Expression nonLiteral) {
+    }
+
+    private static PathAttr extractPathAttr(AnnotationExpr anno) {
+        Expression attrValue = null;
         if (anno instanceof SingleMemberAnnotationExpr single) {
-            List<String> values = expressionValues(single.getMemberValue(), EndpointIndex::stringLiteralValue);
-            return values.isEmpty() ? List.of("") : values;
+            attrValue = single.getMemberValue();
+        } else if (anno instanceof NormalAnnotationExpr normal) {
+            attrValue = normal.getPairs().stream()
+                    .filter(pair -> METHOD_ATTR_NAMES.contains(pair.getNameAsString()))
+                    .map(MemberValuePair::getValue)
+                    .findFirst()
+                    .orElse(null);
         }
-        if (anno instanceof NormalAnnotationExpr normal) {
-            for (MemberValuePair pair : normal.getPairs()) {
-                if (METHOD_ATTR_NAMES.contains(pair.getNameAsString())) {
-                    List<String> values = expressionValues(pair.getValue(), EndpointIndex::stringLiteralValue);
-                    if (!values.isEmpty()) {
-                        return values;
-                    }
-                }
-            }
-            return List.of("");
+        if (attrValue == null) {
+            return new PathAttr(List.of(""), null);
         }
-        return List.of("");
+        List<String> literals = expressionValues(attrValue, EndpointIndex::stringLiteralValue);
+        Expression nonLiteral = firstNonLiteral(attrValue);
+        if (literals.isEmpty() && nonLiteral == null) {
+            return new PathAttr(List.of(""), null);
+        }
+        return new PathAttr(literals, nonLiteral);
     }
 
     private static String stringLiteralValue(Expression expr) {
         return expr instanceof StringLiteralExpr sle ? sle.asString() : null;
+    }
+
+    /** First component (array element or the expression itself) that is not a string literal; null if none. */
+    private static Expression firstNonLiteral(Expression expr) {
+        if (expr instanceof ArrayInitializerExpr array) {
+            for (Expression e : array.getValues()) {
+                if (!(e instanceof StringLiteralExpr)) {
+                    return e;
+                }
+            }
+            return null;
+        }
+        return expr instanceof StringLiteralExpr ? null : expr;
+    }
+
+    private static Expression firstExpression(Expression expr) {
+        if (expr instanceof ArrayInitializerExpr array && !array.getValues().isEmpty()) {
+            return array.getValues().get(0);
+        }
+        return expr;
     }
 
     private static List<String> expressionValues(Expression expr, java.util.function.Function<Expression, String> extractor) {
@@ -215,6 +304,16 @@ public final class EndpointIndex {
     /** All indexed endpoints, in source-scan order. */
     public List<EndpointHandler> all() {
         return handlers;
+    }
+
+    /** Mappings found in source but not statically resolvable; never silently dropped. */
+    public List<UnresolvedMapping> unresolved() {
+        return unresolved;
+    }
+
+    /** Number of {@code .java} files the index was built from. */
+    public int scannedFileCount() {
+        return scannedFileCount;
     }
 
     /**

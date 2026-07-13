@@ -106,4 +106,37 @@ class EndpointIndexTest {
         assertThat(byId).isPresent();
         assertThat(byId.get().methodName()).isEqualTo("byId");
     }
+
+    @org.junit.jupiter.api.Test
+    void unresolvableMappingsAreReportedNotSilentlySkipped() {
+        var unresolved = index.unresolved();
+
+        assertThat(unresolved).hasSize(2);
+
+        var constantRef = unresolved.stream()
+                .filter(u -> u.reason().equals(UnresolvedMapping.REASON_CONSTANT_REFERENCE))
+                .findFirst().orElseThrow();
+        assertThat(constantRef.location()).endsWith("ConstantPathController#list");
+        assertThat(constantRef.filePath()).endsWith("ConstantPathController.java");
+        assertThat(constantRef.lineNumber()).isGreaterThan(0);
+
+        var wildcard = unresolved.stream()
+                .filter(u -> u.reason().equals(UnresolvedMapping.REASON_UNSUPPORTED_PATTERN))
+                .findFirst().orElseThrow();
+        assertThat(wildcard.location()).endsWith("ConstantPathController#files");
+    }
+
+    @org.junit.jupiter.api.Test
+    void literalSiblingOfUnresolvedMappingIsStillIndexed() {
+        var ok = index.resolve("GET", "/const/ok");
+        assertThat(ok).isPresent();
+        assertThat(ok.get().methodName()).isEqualTo("ok");
+        // the constant-referenced mapping must not be indexed under a wrong path
+        assertThat(index.resolve("GET", "/const")).isEmpty();
+    }
+
+    @org.junit.jupiter.api.Test
+    void scannedFileCountIsExposed() {
+        assertThat(index.scannedFileCount()).isGreaterThanOrEqualTo(6);
+    }
 }
