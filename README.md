@@ -27,6 +27,13 @@ When there's no exact match, it returns the closest candidates instead of an emp
 
 The tool declares MCP tool annotations (`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: false`), so clients know up front that it's a safe, retryable, local-only lookup that never mutates anything.
 
+### Never silently wrong
+
+Mappings the static analysis cannot resolve — constant-referenced paths (`@GetMapping(SOME_CONSTANT)`), wildcard patterns (`*` / `**`), non-literal expressions — are never indexed under a guessed value and never silently dropped. They are collected as *unresolved mappings* (file, line, reason) and self-reported:
+
+- a second tool, `indexStatus`, returns the index's coverage up front: endpoint count, scanned file count, and every unresolved mapping with its reason — call it first to know how much to trust the index for a given project
+- when `resolveEndpoint` misses, the response includes the unresolved mappings alongside the close-match suggestions, since the endpoint you're looking for may be among them
+
 ## Installation
 
 Requires Java 21. The server itself runs on Spring Boot 4.1 with Spring AI 2.0 (MCP Server starter), but that only concerns the server's own runtime — the codebase being analyzed is parsed as plain source with JavaParser, so Spring Boot 3.x (or any Spring MVC) projects are perfectly valid analysis targets.
