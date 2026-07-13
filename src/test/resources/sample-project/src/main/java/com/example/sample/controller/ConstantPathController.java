@@ -24,6 +24,11 @@ public class ConstantPathController {
         return "files";
     }
 
+    @GetMapping(LIST_PATH + "/all")
+    public String all() {
+        return "all";
+    }
+
     @GetMapping("/ok")
     public String ok() {
         return "ok";

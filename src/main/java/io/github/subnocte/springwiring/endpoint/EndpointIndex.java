@@ -4,6 +4,7 @@ import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.ArrayInitializerExpr;
@@ -105,26 +106,110 @@ public final class EndpointIndex {
             }
         }
 
+        Map<String, String> constants = new HashMap<>();
+        for (ParsedUnit unit : units) {
+            for (ClassOrInterfaceDeclaration decl : unit.cu().findAll(ClassOrInterfaceDeclaration.class)) {
+                Optional<String> owner = decl.getFullyQualifiedName();
+                if (owner.isEmpty()) {
+                    continue;
+                }
+                for (FieldDeclaration field : decl.getFields()) {
+                    // interface fields are implicitly public static final
+                    boolean constant = decl.isInterface() || (field.isStatic() && field.isFinal());
+                    if (!constant) {
+                        continue;
+                    }
+                    field.getVariables().forEach(variable -> {
+                        if (variable.getTypeAsString().equals("String")
+                                && variable.getInitializer().orElse(null) instanceof StringLiteralExpr literal) {
+                            constants.put(owner.get() + "#" + variable.getNameAsString(), literal.asString());
+                        }
+                    });
+                }
+            }
+        }
+
+        AnalysisContext ctx = new AnalysisContext(typeTable, constants);
         List<EndpointHandler> collected = new ArrayList<>();
         List<UnresolvedMapping> unresolvedCollected = new ArrayList<>();
         for (ParsedUnit unit : units) {
             for (ClassOrInterfaceDeclaration decl : unit.cu().findAll(ClassOrInterfaceDeclaration.class)) {
                 if (!decl.isInterface() && isController(decl)) {
-                    collectController(decl, unit, typeTable, collected, unresolvedCollected);
+                    collectController(decl, unit, ctx, collected, unresolvedCollected);
                 }
             }
         }
         return new EndpointIndex(collected, unresolvedCollected, sourceFiles.size());
     }
 
+    /** Shared lookup tables for one build pass. */
+    private record AnalysisContext(Map<String, TypeEntry> typeTable, Map<String, String> constants) {
+    }
+
+    /**
+     * Resolves a mapping-attribute expression to a string: a literal directly, or a
+     * {@code static final String} constant reachable from {@code enclosing}/{@code cu}
+     * (same class, qualified field access via imports, or static import).
+     */
+    private static String stringValueOf(
+            Expression expr, ClassOrInterfaceDeclaration enclosing, CompilationUnit cu, AnalysisContext ctx) {
+        if (expr instanceof StringLiteralExpr sle) {
+            return sle.asString();
+        }
+        if (expr instanceof NameExpr name) {
+            String simple = name.getNameAsString();
+            String ownerFqcn = enclosing.getFullyQualifiedName().orElse(null);
+            if (ownerFqcn != null) {
+                String value = ctx.constants().get(ownerFqcn + "#" + simple);
+                if (value != null) {
+                    return value;
+                }
+            }
+            for (ImportDeclaration imp : cu.getImports()) {
+                if (!imp.isStatic()) {
+                    continue;
+                }
+                if (!imp.isAsterisk() && imp.getNameAsString().endsWith("." + simple)) {
+                    String owner = imp.getNameAsString()
+                            .substring(0, imp.getNameAsString().length() - simple.length() - 1);
+                    String value = ctx.constants().get(owner + "#" + simple);
+                    if (value != null) {
+                        return value;
+                    }
+                } else if (imp.isAsterisk()) {
+                    String value = ctx.constants().get(imp.getNameAsString() + "#" + simple);
+                    if (value != null) {
+                        return value;
+                    }
+                }
+            }
+            return null;
+        }
+        if (expr instanceof FieldAccessExpr access) {
+            String field = access.getNameAsString();
+            String scope = access.getScope().toString();
+            String direct = ctx.constants().get(scope + "#" + field);
+            if (direct != null) {
+                return direct;
+            }
+            return resolveType(scope, cu, ctx.typeTable())
+                    .flatMap(t -> t.decl().getFullyQualifiedName())
+                    .map(f -> ctx.constants().get(f + "#" + field))
+                    .orElse(null);
+        }
+        return null;
+    }
+
     private static void collectController(
-            ClassOrInterfaceDeclaration decl, ParsedUnit unit, Map<String, TypeEntry> typeTable,
+            ClassOrInterfaceDeclaration decl, ParsedUnit unit, AnalysisContext ctx,
             List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
         String fqcn = decl.getFullyQualifiedName().orElse(decl.getNameAsString());
         Path file = unit.path();
+        java.util.function.Function<Expression, String> valueOf =
+                expr -> stringValueOf(expr, decl, unit.cu(), ctx);
 
         Optional<AnnotationExpr> classMapping = requestMappingOf(decl);
-        PathAttr baseAttr = classMapping.map(EndpointIndex::extractPathAttr)
+        PathAttr baseAttr = classMapping.map(a -> extractPathAttr(a, valueOf))
                 .orElse(new PathAttr(List.of(""), null));
         if (baseAttr.nonLiteral() != null) {
             unresolvedOut.add(new UnresolvedMapping(
@@ -145,14 +230,14 @@ public final class EndpointIndex {
                     anyMethodMapping = true;
                     int line = method.getBegin().map(p -> p.line).orElse(-1);
                     collectMethodMapping(mapping, method, fqcn, baseAttr.literals(),
-                            file, line, out, unresolvedOut);
+                            file, line, valueOf, out, unresolvedOut);
                 }
             }
         }
 
         if (!anyMethodMapping && !decl.getImplementedTypes().isEmpty()) {
             collectFromInterfaces(decl, fqcn, classMapping.isPresent(), baseAttr.literals(),
-                    unit, typeTable, out, unresolvedOut);
+                    unit, ctx, out, unresolvedOut);
         }
     }
 
@@ -163,22 +248,24 @@ public final class EndpointIndex {
      */
     private static void collectFromInterfaces(
             ClassOrInterfaceDeclaration decl, String fqcn, boolean implHasClassMapping,
-            List<String> implBasePaths, ParsedUnit unit, Map<String, TypeEntry> typeTable,
+            List<String> implBasePaths, ParsedUnit unit, AnalysisContext ctx,
             List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
         boolean anyIndexed = false;
         boolean anyInterfaceMissing = false;
 
         for (ClassOrInterfaceType implemented : decl.getImplementedTypes()) {
-            Optional<TypeEntry> ifaceEntry = resolveType(implemented.getNameWithScope(), unit.cu(), typeTable);
+            Optional<TypeEntry> ifaceEntry = resolveType(implemented.getNameWithScope(), unit.cu(), ctx.typeTable());
             if (ifaceEntry.isEmpty() || !ifaceEntry.get().decl().isInterface()) {
                 anyInterfaceMissing = true;
                 continue;
             }
             ClassOrInterfaceDeclaration iface = ifaceEntry.get().decl();
+            java.util.function.Function<Expression, String> ifaceValueOf =
+                    expr -> stringValueOf(expr, iface, ifaceEntry.get().cu(), ctx);
 
             List<String> basePaths = implBasePaths;
             if (!implHasClassMapping) {
-                PathAttr ifaceBase = requestMappingOf(iface).map(EndpointIndex::extractPathAttr)
+                PathAttr ifaceBase = requestMappingOf(iface).map(a -> extractPathAttr(a, ifaceValueOf))
                         .orElse(new PathAttr(List.of(""), null));
                 if (ifaceBase.nonLiteral() != null && ifaceBase.literals().isEmpty()) {
                     unresolvedOut.add(new UnresolvedMapping(
@@ -207,7 +294,7 @@ public final class EndpointIndex {
                     }
                     int before = out.size();
                     collectMethodMapping(mapping, ifaceMethod, fqcn, basePaths,
-                            handlerFile, handlerLine, out, unresolvedOut);
+                            handlerFile, handlerLine, ifaceValueOf, out, unresolvedOut);
                     if (out.size() > before) {
                         anyIndexed = true;
                     }
@@ -264,7 +351,8 @@ public final class EndpointIndex {
 
     private static void collectMethodMapping(
             AnnotationExpr mapping, MethodDeclaration method, String fqcn, List<String> basePaths,
-            Path handlerFile, int handlerLine, List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
+            Path handlerFile, int handlerLine, java.util.function.Function<Expression, String> valueOf,
+            List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
         String simpleName = mapping.getNameAsString();
         String location = fqcn + "#" + method.getNameAsString();
 
@@ -275,7 +363,7 @@ public final class EndpointIndex {
             return;
         }
 
-        PathAttr pathAttr = extractPathAttr(mapping);
+        PathAttr pathAttr = extractPathAttr(mapping, valueOf);
         if (pathAttr.nonLiteral() != null) {
             unresolvedOut.add(new UnresolvedMapping(
                     handlerFile.toString(), handlerLine, location, reasonFor(pathAttr.nonLiteral())));
@@ -354,7 +442,7 @@ public final class EndpointIndex {
     private record PathAttr(List<String> literals, Expression nonLiteral) {
     }
 
-    private static PathAttr extractPathAttr(AnnotationExpr anno) {
+    private static PathAttr extractPathAttr(AnnotationExpr anno, java.util.function.Function<Expression, String> valueOf) {
         Expression attrValue = null;
         if (anno instanceof SingleMemberAnnotationExpr single) {
             attrValue = single.getMemberValue();
@@ -368,29 +456,25 @@ public final class EndpointIndex {
         if (attrValue == null) {
             return new PathAttr(List.of(""), null);
         }
-        List<String> literals = expressionValues(attrValue, EndpointIndex::stringLiteralValue);
-        Expression nonLiteral = firstNonLiteral(attrValue);
+        List<String> literals = expressionValues(attrValue, valueOf);
+        Expression nonLiteral = firstUnextractable(attrValue, valueOf);
         if (literals.isEmpty() && nonLiteral == null) {
             return new PathAttr(List.of(""), null);
         }
         return new PathAttr(literals, nonLiteral);
     }
 
-    private static String stringLiteralValue(Expression expr) {
-        return expr instanceof StringLiteralExpr sle ? sle.asString() : null;
-    }
-
-    /** First component (array element or the expression itself) that is not a string literal; null if none. */
-    private static Expression firstNonLiteral(Expression expr) {
+    /** First component (array element or the expression itself) the extractor cannot evaluate; null if none. */
+    private static Expression firstUnextractable(Expression expr, java.util.function.Function<Expression, String> valueOf) {
         if (expr instanceof ArrayInitializerExpr array) {
             for (Expression e : array.getValues()) {
-                if (!(e instanceof StringLiteralExpr)) {
+                if (valueOf.apply(e) == null) {
                     return e;
                 }
             }
             return null;
         }
-        return expr instanceof StringLiteralExpr ? null : expr;
+        return valueOf.apply(expr) == null ? expr : null;
     }
 
     private static Expression firstExpression(Expression expr) {

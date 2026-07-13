@@ -39,7 +39,7 @@ class EndpointResolverToolsTest {
                 .hasSize(3)
                 .extracting(UnresolvedMapping::reason)
                 .containsExactlyInAnyOrder(
-                        UnresolvedMapping.REASON_CONSTANT_REFERENCE,
+                        UnresolvedMapping.REASON_NON_LITERAL_EXPRESSION,
                         UnresolvedMapping.REASON_UNSUPPORTED_PATTERN,
                         UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND);
         assertThat(result.warning()).contains("3");
@@ -64,7 +64,7 @@ class EndpointResolverToolsTest {
         assertThat(status.scannedFileCount()).isEqualTo(index.scannedFileCount());
         assertThat(status.unresolvedCount()).isEqualTo(3);
         assertThat(status.unresolvedByReason())
-                .containsEntry(UnresolvedMapping.REASON_CONSTANT_REFERENCE, 1L)
+                .containsEntry(UnresolvedMapping.REASON_NON_LITERAL_EXPRESSION, 1L)
                 .containsEntry(UnresolvedMapping.REASON_UNSUPPORTED_PATTERN, 1L)
                 .containsEntry(UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND, 1L);
         assertThat(status.unresolvedMappings()).hasSize(3);

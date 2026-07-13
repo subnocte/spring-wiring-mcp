@@ -113,17 +113,45 @@ class EndpointIndexTest {
 
         assertThat(unresolved).hasSize(3);
 
-        var constantRef = unresolved.stream()
-                .filter(u -> u.reason().equals(UnresolvedMapping.REASON_CONSTANT_REFERENCE))
+        // string concatenation stays unresolvable
+        var concat = unresolved.stream()
+                .filter(u -> u.reason().equals(UnresolvedMapping.REASON_NON_LITERAL_EXPRESSION))
                 .findFirst().orElseThrow();
-        assertThat(constantRef.location()).endsWith("ConstantPathController#list");
-        assertThat(constantRef.filePath()).endsWith("ConstantPathController.java");
-        assertThat(constantRef.lineNumber()).isGreaterThan(0);
+        assertThat(concat.location()).endsWith("ConstantPathController#all");
+        assertThat(concat.filePath()).endsWith("ConstantPathController.java");
+        assertThat(concat.lineNumber()).isGreaterThan(0);
 
         var wildcard = unresolved.stream()
                 .filter(u -> u.reason().equals(UnresolvedMapping.REASON_UNSUPPORTED_PATTERN))
                 .findFirst().orElseThrow();
         assertThat(wildcard.location()).endsWith("ConstantPathController#files");
+
+        // simple constant references are resolvable now, so none may remain unresolved
+        assertThat(unresolved)
+                .extracting(UnresolvedMapping::reason)
+                .doesNotContain(UnresolvedMapping.REASON_CONSTANT_REFERENCE);
+    }
+
+    @org.junit.jupiter.api.Test
+    void sameClassConstantPathIsResolved() {
+        var hit = index.resolve("GET", "/const/list");
+        assertThat(hit).isPresent();
+        assertThat(hit.get().methodName()).isEqualTo("list");
+    }
+
+    @org.junit.jupiter.api.Test
+    void crossClassConstantPathsAreResolved() {
+        // class-level: qualified field access ApiPaths.WIDGETS via regular import
+        var list = index.resolve("GET", "/widgets");
+        assertThat(list).isPresent();
+        assertThat(list.get().fqcn()).endsWith(".WidgetController");
+        assertThat(list.get().methodName()).isEqualTo("list");
+
+        // method-level: NameExpr resolved through a static import
+        var byId = index.resolve("GET", "/widgets/9");
+        assertThat(byId).isPresent();
+        assertThat(byId.get().methodName()).isEqualTo("byId");
+        assertThat(byId.get().pathPattern()).isEqualTo("/widgets/{id}");
     }
 
     @org.junit.jupiter.api.Test
