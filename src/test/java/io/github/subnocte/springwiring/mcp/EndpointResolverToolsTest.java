@@ -34,14 +34,15 @@ class EndpointResolverToolsTest {
 
         assertThat(result.found()).isFalse();
         assertThat(result.suggestions()).isNotEmpty();
-        assertThat(result.unresolvedCount()).isEqualTo(2);
+        assertThat(result.unresolvedCount()).isEqualTo(3);
         assertThat(result.unresolvedMappings())
-                .hasSize(2)
+                .hasSize(3)
                 .extracting(UnresolvedMapping::reason)
                 .containsExactlyInAnyOrder(
                         UnresolvedMapping.REASON_CONSTANT_REFERENCE,
-                        UnresolvedMapping.REASON_UNSUPPORTED_PATTERN);
-        assertThat(result.warning()).contains("2");
+                        UnresolvedMapping.REASON_UNSUPPORTED_PATTERN,
+                        UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND);
+        assertThat(result.warning()).contains("3");
     }
 
     @Test
@@ -50,7 +51,7 @@ class EndpointResolverToolsTest {
 
         assertThat(result.found()).isTrue();
         assertThat(result.match().methodName()).isEqualTo("health");
-        assertThat(result.unresolvedCount()).isEqualTo(2);
+        assertThat(result.unresolvedCount()).isEqualTo(3);
         assertThat(result.unresolvedMappings()).isEmpty();
         assertThat(result.warning()).isNull();
     }
@@ -61,10 +62,11 @@ class EndpointResolverToolsTest {
 
         assertThat(status.endpointCount()).isEqualTo(index.all().size());
         assertThat(status.scannedFileCount()).isEqualTo(index.scannedFileCount());
-        assertThat(status.unresolvedCount()).isEqualTo(2);
+        assertThat(status.unresolvedCount()).isEqualTo(3);
         assertThat(status.unresolvedByReason())
                 .containsEntry(UnresolvedMapping.REASON_CONSTANT_REFERENCE, 1L)
-                .containsEntry(UnresolvedMapping.REASON_UNSUPPORTED_PATTERN, 1L);
-        assertThat(status.unresolvedMappings()).hasSize(2);
+                .containsEntry(UnresolvedMapping.REASON_UNSUPPORTED_PATTERN, 1L)
+                .containsEntry(UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND, 1L);
+        assertThat(status.unresolvedMappings()).hasSize(3);
     }
 }

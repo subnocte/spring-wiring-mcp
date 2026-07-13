@@ -20,4 +20,11 @@ public record UnresolvedMapping(String filePath, int lineNumber, String location
 
     /** Path pattern uses syntax the matcher does not support yet (e.g. {@code *} / {@code **} wildcards). */
     public static final String REASON_UNSUPPORTED_PATTERN = "unsupported-pattern";
+
+    /**
+     * Controller has no method-level mappings and implements an interface whose source is not
+     * under the scanned root (typically build-time generated, e.g. by openapi-generator), so
+     * its endpoints cannot be indexed from source.
+     */
+    public static final String REASON_INTERFACE_MAPPINGS_NOT_FOUND = "interface-mappings-not-found";
 }

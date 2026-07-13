@@ -2,6 +2,7 @@ package io.github.subnocte.springwiring.endpoint;
 
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
@@ -13,14 +14,16 @@ import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.NormalAnnotationExpr;
 import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
-import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -30,10 +33,15 @@ import java.util.Set;
  *
  * <p>Built once from a set of {@code .java} source files via JavaParser. Source-only:
  * no compilation or classpath resolution is performed. Mappings that cannot be resolved
- * statically (constant-referenced paths, unsupported wildcard patterns, non-literal
- * expressions) are never indexed under a guessed value — they are collected as
+ * statically are never indexed under a guessed value — they are collected as
  * {@link UnresolvedMapping} and exposed via {@link #unresolved()} so clients can see
  * exactly what the index does not cover.
+ *
+ * <p>Controllers whose mappings live on an implemented interface are supported when the
+ * interface source is under the scanned root; per Spring semantics, annotations on the
+ * implementation take precedence over the interface's (class-level prefixes are not
+ * concatenated). Controllers implementing interfaces that are not in the scanned sources
+ * (e.g. build-time generated API interfaces) are self-reported as unresolved.
  */
 public final class EndpointIndex {
 
@@ -68,81 +76,209 @@ public final class EndpointIndex {
         return build(io.github.subnocte.springwiring.scanner.SourceScanner.scan(root));
     }
 
+    /** A parsed source file. */
+    private record ParsedUnit(CompilationUnit cu, Path path) {
+    }
+
+    /** A type declaration found in the scanned sources, with its surrounding context. */
+    private record TypeEntry(ClassOrInterfaceDeclaration decl, CompilationUnit cu, Path path) {
+    }
+
     /** Builds an index from an explicit list of source files. Files that fail to parse are skipped. */
     public static EndpointIndex build(List<Path> sourceFiles) {
-        List<EndpointHandler> collected = new ArrayList<>();
-        List<UnresolvedMapping> unresolvedCollected = new ArrayList<>();
+        List<ParsedUnit> units = new ArrayList<>();
         for (Path file : sourceFiles) {
             try {
-                CompilationUnit cu = StaticJavaParser.parse(file);
-                collectFromCompilationUnit(cu, file, collected, unresolvedCollected);
+                units.add(new ParsedUnit(StaticJavaParser.parse(file), file));
             } catch (IOException e) {
                 throw new UncheckedIOException("Failed to read source file: " + file, e);
             } catch (com.github.javaparser.ParseProblemException e) {
                 // Skip unparsable files; a single malformed file should not abort the whole index.
             }
         }
+
+        Map<String, TypeEntry> typeTable = new HashMap<>();
+        for (ParsedUnit unit : units) {
+            for (ClassOrInterfaceDeclaration decl : unit.cu().findAll(ClassOrInterfaceDeclaration.class)) {
+                decl.getFullyQualifiedName().ifPresent(
+                        fqcn -> typeTable.put(fqcn, new TypeEntry(decl, unit.cu(), unit.path())));
+            }
+        }
+
+        List<EndpointHandler> collected = new ArrayList<>();
+        List<UnresolvedMapping> unresolvedCollected = new ArrayList<>();
+        for (ParsedUnit unit : units) {
+            for (ClassOrInterfaceDeclaration decl : unit.cu().findAll(ClassOrInterfaceDeclaration.class)) {
+                if (!decl.isInterface() && isController(decl)) {
+                    collectController(decl, unit, typeTable, collected, unresolvedCollected);
+                }
+            }
+        }
         return new EndpointIndex(collected, unresolvedCollected, sourceFiles.size());
     }
 
-    private static void collectFromCompilationUnit(
-            CompilationUnit cu, Path file, List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
-        cu.accept(new VoidVisitorAdapter<Void>() {
-            @Override
-            public void visit(ClassOrInterfaceDeclaration decl, Void arg) {
-                super.visit(decl, arg);
-                if (!isController(decl)) {
-                    return;
-                }
-                String fqcn = decl.getFullyQualifiedName().orElse(decl.getNameAsString());
+    private static void collectController(
+            ClassOrInterfaceDeclaration decl, ParsedUnit unit, Map<String, TypeEntry> typeTable,
+            List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
+        String fqcn = decl.getFullyQualifiedName().orElse(decl.getNameAsString());
+        Path file = unit.path();
 
-                Optional<AnnotationExpr> classMapping = decl.getAnnotations().stream()
-                        .filter(a -> a.getNameAsString().equals("RequestMapping"))
-                        .findFirst();
-                PathAttr baseAttr = classMapping.map(EndpointIndex::extractPathAttr)
+        Optional<AnnotationExpr> classMapping = requestMappingOf(decl);
+        PathAttr baseAttr = classMapping.map(EndpointIndex::extractPathAttr)
+                .orElse(new PathAttr(List.of(""), null));
+        if (baseAttr.nonLiteral() != null) {
+            unresolvedOut.add(new UnresolvedMapping(
+                    file.toString(),
+                    classMapping.flatMap(a -> a.getBegin()).map(p -> p.line).orElse(-1),
+                    fqcn,
+                    reasonFor(baseAttr.nonLiteral())));
+            if (baseAttr.literals().isEmpty()) {
+                // Base path unknown: indexing method paths would produce wrong patterns.
+                return;
+            }
+        }
+
+        boolean anyMethodMapping = false;
+        for (MethodDeclaration method : decl.getMethods()) {
+            for (AnnotationExpr mapping : method.getAnnotations()) {
+                if (isMappingAnnotation(mapping.getNameAsString())) {
+                    anyMethodMapping = true;
+                    int line = method.getBegin().map(p -> p.line).orElse(-1);
+                    collectMethodMapping(mapping, method, fqcn, baseAttr.literals(),
+                            file, line, out, unresolvedOut);
+                }
+            }
+        }
+
+        if (!anyMethodMapping && !decl.getImplementedTypes().isEmpty()) {
+            collectFromInterfaces(decl, fqcn, classMapping.isPresent(), baseAttr.literals(),
+                    unit, typeTable, out, unresolvedOut);
+        }
+    }
+
+    /**
+     * Indexes mappings declared on implemented interfaces (Spring inherits them when the
+     * implementation declares none). The implementation's class-level {@code @RequestMapping}
+     * takes precedence over the interface's; they are not concatenated.
+     */
+    private static void collectFromInterfaces(
+            ClassOrInterfaceDeclaration decl, String fqcn, boolean implHasClassMapping,
+            List<String> implBasePaths, ParsedUnit unit, Map<String, TypeEntry> typeTable,
+            List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
+        boolean anyIndexed = false;
+        boolean anyInterfaceMissing = false;
+
+        for (ClassOrInterfaceType implemented : decl.getImplementedTypes()) {
+            Optional<TypeEntry> ifaceEntry = resolveType(implemented.getNameWithScope(), unit.cu(), typeTable);
+            if (ifaceEntry.isEmpty() || !ifaceEntry.get().decl().isInterface()) {
+                anyInterfaceMissing = true;
+                continue;
+            }
+            ClassOrInterfaceDeclaration iface = ifaceEntry.get().decl();
+
+            List<String> basePaths = implBasePaths;
+            if (!implHasClassMapping) {
+                PathAttr ifaceBase = requestMappingOf(iface).map(EndpointIndex::extractPathAttr)
                         .orElse(new PathAttr(List.of(""), null));
-                if (baseAttr.nonLiteral() != null) {
+                if (ifaceBase.nonLiteral() != null && ifaceBase.literals().isEmpty()) {
                     unresolvedOut.add(new UnresolvedMapping(
-                            file.toString(),
-                            classMapping.flatMap(a -> a.getBegin()).map(p -> p.line).orElse(-1),
+                            ifaceEntry.get().path().toString(),
+                            requestMappingOf(iface).flatMap(a -> a.getBegin()).map(p -> p.line).orElse(-1),
                             fqcn,
-                            reasonFor(baseAttr.nonLiteral())));
-                    if (baseAttr.literals().isEmpty()) {
-                        // Base path unknown: indexing method paths would produce wrong patterns.
-                        return;
-                    }
+                            reasonFor(ifaceBase.nonLiteral())));
+                    continue;
                 }
+                basePaths = ifaceBase.literals();
+            }
 
-                for (MethodDeclaration method : decl.getMethods()) {
-                    for (AnnotationExpr mapping : method.getAnnotations()) {
-                        collectMethodMapping(mapping, method, fqcn, baseAttr.literals(), file, out, unresolvedOut);
+            for (MethodDeclaration ifaceMethod : iface.getMethods()) {
+                for (AnnotationExpr mapping : ifaceMethod.getAnnotations()) {
+                    if (!isMappingAnnotation(mapping.getNameAsString())) {
+                        continue;
+                    }
+                    // Point the handler at the implementing method when it exists,
+                    // otherwise at the interface (default methods).
+                    Path handlerFile = ifaceEntry.get().path();
+                    int handlerLine = ifaceMethod.getBegin().map(p -> p.line).orElse(-1);
+                    List<MethodDeclaration> impls = decl.getMethodsByName(ifaceMethod.getNameAsString());
+                    if (!impls.isEmpty()) {
+                        handlerFile = unit.path();
+                        handlerLine = impls.get(0).getBegin().map(p -> p.line).orElse(-1);
+                    }
+                    int before = out.size();
+                    collectMethodMapping(mapping, ifaceMethod, fqcn, basePaths,
+                            handlerFile, handlerLine, out, unresolvedOut);
+                    if (out.size() > before) {
+                        anyIndexed = true;
                     }
                 }
             }
-        }, null);
+        }
+
+        if (!anyIndexed && anyInterfaceMissing) {
+            unresolvedOut.add(new UnresolvedMapping(
+                    unit.path().toString(),
+                    decl.getBegin().map(p -> p.line).orElse(-1),
+                    fqcn,
+                    UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND));
+        }
+    }
+
+    /** Resolves a type name used in {@code cu} to a scanned type declaration. */
+    private static Optional<TypeEntry> resolveType(String name, CompilationUnit cu, Map<String, TypeEntry> typeTable) {
+        if (name.contains(".")) {
+            return Optional.ofNullable(typeTable.get(name));
+        }
+        for (ImportDeclaration imp : cu.getImports()) {
+            if (!imp.isStatic() && !imp.isAsterisk() && imp.getNameAsString().endsWith("." + name)) {
+                return Optional.ofNullable(typeTable.get(imp.getNameAsString()));
+            }
+        }
+        String samePackage = cu.getPackageDeclaration()
+                .map(p -> p.getNameAsString() + "." + name)
+                .orElse(name);
+        TypeEntry entry = typeTable.get(samePackage);
+        if (entry != null) {
+            return Optional.of(entry);
+        }
+        for (ImportDeclaration imp : cu.getImports()) {
+            if (!imp.isStatic() && imp.isAsterisk()) {
+                entry = typeTable.get(imp.getNameAsString() + "." + name);
+                if (entry != null) {
+                    return Optional.of(entry);
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static boolean isMappingAnnotation(String simpleName) {
+        return SHORTHAND_MAPPINGS.containsKey(simpleName) || simpleName.equals("RequestMapping");
+    }
+
+    private static Optional<AnnotationExpr> requestMappingOf(ClassOrInterfaceDeclaration decl) {
+        return decl.getAnnotations().stream()
+                .filter(a -> a.getNameAsString().equals("RequestMapping"))
+                .findFirst();
     }
 
     private static void collectMethodMapping(
             AnnotationExpr mapping, MethodDeclaration method, String fqcn, List<String> basePaths,
-            Path file, List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
+            Path handlerFile, int handlerLine, List<EndpointHandler> out, List<UnresolvedMapping> unresolvedOut) {
         String simpleName = mapping.getNameAsString();
-        if (!SHORTHAND_MAPPINGS.containsKey(simpleName) && !simpleName.equals("RequestMapping")) {
-            return;
-        }
         String location = fqcn + "#" + method.getNameAsString();
-        int line = method.getBegin().map(p -> p.line).orElse(-1);
 
         HttpMethodsAttr methodsAttr = resolveHttpMethods(mapping, simpleName);
         if (methodsAttr.nonLiteral() != null) {
             unresolvedOut.add(new UnresolvedMapping(
-                    file.toString(), line, location, reasonFor(methodsAttr.nonLiteral())));
+                    handlerFile.toString(), handlerLine, location, reasonFor(methodsAttr.nonLiteral())));
             return;
         }
 
         PathAttr pathAttr = extractPathAttr(mapping);
         if (pathAttr.nonLiteral() != null) {
             unresolvedOut.add(new UnresolvedMapping(
-                    file.toString(), line, location, reasonFor(pathAttr.nonLiteral())));
+                    handlerFile.toString(), handlerLine, location, reasonFor(pathAttr.nonLiteral())));
             if (pathAttr.literals().isEmpty()) {
                 return;
             }
@@ -153,12 +289,14 @@ public final class EndpointIndex {
                 String pattern = combine(base, methodPath);
                 if (pattern.contains("*")) {
                     unresolvedOut.add(new UnresolvedMapping(
-                            file.toString(), line, location, UnresolvedMapping.REASON_UNSUPPORTED_PATTERN));
+                            handlerFile.toString(), handlerLine, location,
+                            UnresolvedMapping.REASON_UNSUPPORTED_PATTERN));
                     continue;
                 }
                 for (String httpMethod : methodsAttr.methods()) {
                     out.add(new EndpointHandler(
-                            httpMethod, pattern, fqcn, method.getNameAsString(), file.toString(), line));
+                            httpMethod, pattern, fqcn, method.getNameAsString(),
+                            handlerFile.toString(), handlerLine));
                 }
             }
         }

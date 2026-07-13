@@ -111,7 +111,7 @@ class EndpointIndexTest {
     void unresolvableMappingsAreReportedNotSilentlySkipped() {
         var unresolved = index.unresolved();
 
-        assertThat(unresolved).hasSize(2);
+        assertThat(unresolved).hasSize(3);
 
         var constantRef = unresolved.stream()
                 .filter(u -> u.reason().equals(UnresolvedMapping.REASON_CONSTANT_REFERENCE))
@@ -138,5 +138,43 @@ class EndpointIndexTest {
     @org.junit.jupiter.api.Test
     void scannedFileCountIsExposed() {
         assertThat(index.scannedFileCount()).isGreaterThanOrEqualTo(6);
+    }
+
+    @org.junit.jupiter.api.Test
+    void interfaceDeclaredMappingsAreIndexedForImplementingController() {
+        var ping = index.resolve("GET", "/ping");
+        assertThat(ping).isPresent();
+        assertThat(ping.get().fqcn()).endsWith(".PingController");
+        assertThat(ping.get().methodName()).isEqualTo("ping");
+        // handler location points at the implementing method, not the interface
+        assertThat(ping.get().filePath()).endsWith("PingController.java");
+        assertThat(ping.get().lineNumber()).isGreaterThan(0);
+    }
+
+    @org.junit.jupiter.api.Test
+    void implementationClassLevelMappingOverridesInterfaceClassLevel() {
+        // ThingsApi declares /v1, ThingController declares /v2: Spring picks /v2, no concatenation
+        var v2 = index.resolve("GET", "/v2/things/7");
+        assertThat(v2).isPresent();
+        assertThat(v2.get().fqcn()).endsWith(".ThingController");
+        assertThat(v2.get().methodName()).isEqualTo("getThing");
+
+        assertThat(index.resolve("GET", "/v1/things/7")).isEmpty();
+        assertThat(index.resolve("GET", "/v2/v1/things/7")).isEmpty();
+
+        var post = index.resolve("POST", "/v2/things");
+        assertThat(post).isPresent();
+        assertThat(post.get().methodName()).isEqualTo("createThing");
+    }
+
+    @org.junit.jupiter.api.Test
+    void controllerImplementingUnknownInterfaceIsReportedNotSilentlyEmpty() {
+        var missing = index.unresolved().stream()
+                .filter(u -> u.reason().equals(UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND))
+                .toList();
+
+        assertThat(missing).hasSize(1);
+        assertThat(missing.get(0).location()).endsWith("GeneratedStubController");
+        assertThat(missing.get(0).filePath()).endsWith("GeneratedStubController.java");
     }
 }
