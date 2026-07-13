@@ -27,7 +27,16 @@ public class EndpointResolverTools {
             name = "resolveEndpoint",
             description = "Resolves an HTTP method + path to the Spring MVC controller method that handles it, "
                     + "including the source file and line number. Falls back to close-match suggestions when "
-                    + "no exact route is found."
+                    + "no exact route is found.",
+            // Pure lookup against an in-memory index built from local sources: safe to
+            // call freely, safe to retry, and touches nothing outside the indexed codebase.
+            annotations = @McpTool.McpAnnotations(
+                    title = "Resolve Spring REST endpoint",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false
+            )
     )
     public EndpointResolution resolveEndpoint(
             @McpToolParam(description = "HTTP method, e.g. GET, POST, PUT, DELETE, PATCH", required = true)

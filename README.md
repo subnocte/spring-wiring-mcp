@@ -25,6 +25,8 @@ It understands:
 
 When there's no exact match, it returns the closest candidates instead of an empty result, so the agent isn't left guessing why a route "isn't there."
 
+The tool declares MCP tool annotations (`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: false`), so clients know up front that it's a safe, retryable, local-only lookup that never mutates anything.
+
 ## Installation
 
 Requires Java 21. The server itself runs on Spring Boot 4.1 with Spring AI 2.0 (MCP Server starter), but that only concerns the server's own runtime — the codebase being analyzed is parsed as plain source with JavaParser, so Spring Boot 3.x (or any Spring MVC) projects are perfectly valid analysis targets.
