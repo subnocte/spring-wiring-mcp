@@ -2,12 +2,7 @@
 .gradle/
 build/
 !gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
-
-# Gradle wrapper local props (keep wrapper jar + properties, ignore user overrides)
-gradle-app.setting
-!gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
 .gradletasknamecache
 
 # IDE
