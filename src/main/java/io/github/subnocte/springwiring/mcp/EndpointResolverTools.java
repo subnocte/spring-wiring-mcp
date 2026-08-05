@@ -91,7 +91,9 @@ public class EndpointResolverTools {
                 byReason,
                 unresolved,
                 beanIndex.allBeans().size(),
-                beanIndex.unresolvedInjectionCountByReason());
+                beanIndex.unresolvedInjectionCountByReason(),
+                endpointIndex.parseFailures().size(),
+                endpointIndex.parseFailures());
     }
 
     /**
@@ -127,7 +129,9 @@ public class EndpointResolverTools {
             Map<String, Long> unresolvedByReason,
             List<UnresolvedMapping> unresolvedMappings,
             int beanCount,
-            Map<String, Long> unresolvedInjectionsByReason
+            Map<String, Long> unresolvedInjectionsByReason,
+            int parseFailureCount,
+            List<io.github.subnocte.springwiring.endpoint.ParseFailure> parseFailures
     ) {
     }
 }

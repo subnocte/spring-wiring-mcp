@@ -70,6 +70,11 @@ public final class EndpointIndex {
     private final List<UnresolvedMapping> unresolved;
     private final int scannedFileCount;
 
+    /** Files the parser could not process; stub until parse-failure reporting lands. */
+    public List<ParseFailure> parseFailures() {
+        return List.of();
+    }
+
     private EndpointIndex(List<EndpointHandler> handlers, List<UnresolvedMapping> unresolved, int scannedFileCount) {
         this.handlers = List.copyOf(handlers);
         this.unresolved = List.copyOf(unresolved);

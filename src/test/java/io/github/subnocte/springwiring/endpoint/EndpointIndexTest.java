@@ -222,6 +222,23 @@ class EndpointIndexTest {
     }
 
     @org.junit.jupiter.api.Test
+    void modernJavaSyntaxIsParsedNotSilentlySkipped() {
+        // instanceof patterns and text blocks (Java 16/15) must not knock the
+        // whole file - and its endpoints - out of the index
+        var modern = index.resolve("GET", "/modern");
+        assertThat(modern).isPresent();
+        assertThat(modern.get().methodName()).isEqualTo("modern");
+    }
+
+    @org.junit.jupiter.api.Test
+    void parseFailuresAreReportedNotSilentlySkipped() {
+        var failures = index.parseFailures();
+        assertThat(failures).hasSize(1);
+        assertThat(failures.get(0).filePath()).endsWith("Unparseable.java");
+        assertThat(failures.get(0).reason()).isNotBlank();
+    }
+
+    @org.junit.jupiter.api.Test
     void buildOutputAndTestSourcesAreNeverIndexed() {
         // GhostController lives under build/generated, TestOnlyController under src/test:
         // neither is production code, so neither may appear as an endpoint

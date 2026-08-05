@@ -81,5 +81,7 @@ class EndpointResolverToolsTest {
                         BeanEdge.REASON_MULTIPLE_CANDIDATES, 1L,
                         BeanEdge.REASON_CONDITIONAL_CANDIDATES, 1L,
                         BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, 1L));
+        assertThat(status.parseFailureCount()).isEqualTo(1);
+        assertThat(status.parseFailures().get(0).filePath()).endsWith("Unparseable.java");
     }
 }
