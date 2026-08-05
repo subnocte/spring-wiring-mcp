@@ -458,7 +458,18 @@ public final class BeanIndex {
      * an exact FQCN match wins alone; otherwise all simple-name matches.
      */
     public List<String> findTypeByName(String className) {
-        return List.of();
+        java.util.stream.Stream<String> known = java.util.stream.Stream.concat(
+                beansByFqcn.keySet().stream(),
+                dependenciesByFqcn.values().stream()
+                        .flatMap(d -> d.edges().stream())
+                        .map(BeanEdge::declaredTypeFqcn)
+                        .filter(java.util.Objects::nonNull));
+        List<String> candidates = known.distinct().sorted().toList();
+        if (candidates.contains(className)) {
+            return List.of(className);
+        }
+        String suffix = "." + className;
+        return candidates.stream().filter(f -> f.endsWith(suffix)).toList();
     }
 
     /**
@@ -466,7 +477,28 @@ public final class BeanIndex {
      * declared as it, then unresolved sites listing it as a candidate.
      */
     public List<Dependent> dependentsOf(String fqcn) {
-        return List.of();
+        List<Dependent> viaTarget = new ArrayList<>();
+        List<Dependent> viaDeclared = new ArrayList<>();
+        List<Dependent> viaCandidate = new ArrayList<>();
+        for (BeanDependencies deps : dependenciesByFqcn.values()) {
+            for (BeanEdge edge : deps.edges()) {
+                if (edge.target() != null && edge.target().fqcn().equals(fqcn)) {
+                    viaTarget.add(new Dependent(deps.bean(), edge, Dependent.VIA_TARGET));
+                } else if (fqcn.equals(edge.declaredTypeFqcn())) {
+                    viaDeclared.add(new Dependent(deps.bean(), edge, Dependent.VIA_DECLARED_TYPE));
+                } else if (edge.candidates().stream().anyMatch(c -> c.fqcn().equals(fqcn))) {
+                    viaCandidate.add(new Dependent(deps.bean(), edge, Dependent.VIA_CANDIDATE));
+                }
+            }
+        }
+        Comparator<Dependent> byBean = Comparator.comparing(d -> d.bean().fqcn());
+        viaTarget.sort(byBean);
+        viaDeclared.sort(byBean);
+        viaCandidate.sort(byBean);
+        List<Dependent> all = new ArrayList<>(viaTarget);
+        all.addAll(viaDeclared);
+        all.addAll(viaCandidate);
+        return List.copyOf(all);
     }
 
     /** Count of unresolved dependency sites across all beans, grouped by reason. */
