@@ -2,9 +2,11 @@ package io.github.subnocte.springwiring.bean;
 
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.body.AnnotationDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
+import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
@@ -93,6 +95,7 @@ public final class BeanIndex {
         }
 
         // --- bean universe ---
+        Set<String> customStereotypes = customStereotypesOf(units);
         Map<String, BeanDefinition> beans = new LinkedHashMap<>();
         for (ParsedUnit unit : units) {
             for (ClassOrInterfaceDeclaration decl : unit.cu().findAll(ClassOrInterfaceDeclaration.class)) {
@@ -102,7 +105,7 @@ public final class BeanIndex {
                 }
                 int line = decl.getBegin().map(p -> p.line).orElse(-1);
                 if (!decl.isInterface()) {
-                    stereotypeOf(decl).ifPresent(stereotype -> beans.put(fqcn,
+                    stereotypeOf(decl, customStereotypes).ifPresent(stereotype -> beans.put(fqcn,
                             new BeanDefinition(fqcn, stereotype, unit.path().toString(), line, false)));
                 } else if (hasAnnotation(decl, "Mapper")) {
                     beans.put(fqcn, new BeanDefinition(fqcn, "Mapper", unit.path().toString(), line, true));
@@ -114,8 +117,9 @@ public final class BeanIndex {
             }
         }
         // @Bean factory methods contribute their return type to the universe (stereotyped
-        // classes win on collision). Their own wiring (@Bean method parameters) is not
-        // analyzed in v1: such beans get an empty edge list below.
+        // classes win on collision); the factory method's parameters become the produced
+        // bean's dependency edges.
+        Map<String, FactoryMethod> factoryMethods = new HashMap<>();
         for (ParsedUnit unit : units) {
             for (ClassOrInterfaceDeclaration decl : unit.cu().findAll(ClassOrInterfaceDeclaration.class)) {
                 if (decl.isInterface() || !hasAnnotation(decl, "Configuration")) {
@@ -126,10 +130,12 @@ public final class BeanIndex {
                         continue;
                     }
                     Optional<TypeEntry> returned = entryOf(method.getType(), unit.cu(), typeTable);
-                    returned.flatMap(e -> e.decl().getFullyQualifiedName()).ifPresent(fqcn ->
-                            beans.putIfAbsent(fqcn, new BeanDefinition(
-                                    fqcn, "Bean", unit.path().toString(),
-                                    method.getBegin().map(p -> p.line).orElse(-1), false)));
+                    returned.flatMap(e -> e.decl().getFullyQualifiedName()).ifPresent(fqcn -> {
+                        beans.putIfAbsent(fqcn, new BeanDefinition(
+                                fqcn, "Bean", unit.path().toString(),
+                                method.getBegin().map(p -> p.line).orElse(-1), false));
+                        factoryMethods.putIfAbsent(fqcn, new FactoryMethod(method, unit.cu()));
+                    });
                 }
             }
         }
@@ -154,21 +160,34 @@ public final class BeanIndex {
         Map<String, BeanDependencies> dependencies = new LinkedHashMap<>();
         for (BeanDefinition bean : beans.values()) {
             TypeEntry entry = typeTable.get(bean.fqcn());
-            if (bean.terminal() || entry == null || "Bean".equals(bean.stereotype())) {
+            if (bean.terminal() || (entry == null && !factoryMethods.containsKey(bean.fqcn()))) {
                 dependencies.put(bean.fqcn(), new BeanDependencies(bean, List.of()));
                 continue;
             }
             List<BeanEdge> edges = new ArrayList<>();
-            for (FieldDeclaration field : entry.decl().getFields()) {
-                if (field.isStatic()) {
-                    continue;
+            if ("Bean".equals(bean.stereotype())) {
+                FactoryMethod factory = factoryMethods.get(bean.fqcn());
+                if (factory != null) {
+                    for (Parameter param : factory.method().getParameters()) {
+                        int line = param.getBegin().map(p -> p.line)
+                                .orElse(factory.method().getBegin().map(p -> p.line).orElse(-1));
+                        siteEdge(param.getNameAsString(), param.getType(), param, factory.cu(), line,
+                                typeTable, beans, implementations).ifPresent(edges::add);
+                    }
                 }
-                for (VariableDeclarator variable : field.getVariables()) {
-                    if (variable.getInitializer().isPresent()) {
+            } else {
+                for (FieldDeclaration field : entry.decl().getFields()) {
+                    if (field.isStatic()) {
                         continue;
                     }
-                    edgeFor(field, variable, entry, typeTable, beans, implementations)
-                            .ifPresent(edges::add);
+                    for (VariableDeclarator variable : field.getVariables()) {
+                        if (variable.getInitializer().isPresent()) {
+                            continue;
+                        }
+                        int line = field.getBegin().map(p -> p.line).orElse(-1);
+                        siteEdge(variable.getNameAsString(), variable.getType(), field, entry.cu(), line,
+                                typeTable, beans, implementations).ifPresent(edges::add);
+                    }
                 }
             }
             dependencies.put(bean.fqcn(), new BeanDependencies(bean, List.copyOf(edges)));
@@ -177,59 +196,151 @@ public final class BeanIndex {
         return new BeanIndex(beans, dependencies);
     }
 
+    /** A {@code @Bean} factory method and the compilation unit its types resolve in. */
+    private record FactoryMethod(MethodDeclaration method, CompilationUnit cu) {
+    }
+
     /**
-     * Builds the edge for one field, or empty when the field's type can never be a bean
-     * dependency (primitives, String and friends, {@code java.*}/{@code javax.*} types).
+     * Annotations declared in the scanned sources that act as stereotypes because they
+     * are themselves annotated with one, directly or through another custom stereotype.
      */
-    private static Optional<BeanEdge> edgeFor(
-            FieldDeclaration field, VariableDeclarator variable, TypeEntry owner,
+    private static Set<String> customStereotypesOf(List<ParsedUnit> units) {
+        Map<String, List<String>> annotationsOn = new HashMap<>();
+        for (ParsedUnit unit : units) {
+            for (AnnotationDeclaration decl : unit.cu().findAll(AnnotationDeclaration.class)) {
+                annotationsOn.put(decl.getNameAsString(),
+                        decl.getAnnotations().stream().map(BeanIndex::simpleNameOf).toList());
+            }
+        }
+        Set<String> custom = new java.util.HashSet<>();
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (Map.Entry<String, List<String>> entry : annotationsOn.entrySet()) {
+                if (custom.contains(entry.getKey())) {
+                    continue;
+                }
+                boolean stereotype = entry.getValue().stream()
+                        .anyMatch(a -> STEREOTYPES.contains(a) || custom.contains(a));
+                if (stereotype) {
+                    custom.add(entry.getKey());
+                    changed = true;
+                }
+            }
+        }
+        return custom;
+    }
+
+    /**
+     * Builds the edge for one dependency site (an instance field or a {@code @Bean} method
+     * parameter), or empty when the site's type can never be a bean dependency (primitives,
+     * String and friends, {@code java.*}/{@code javax.*} types).
+     */
+    private static Optional<BeanEdge> siteEdge(
+            String siteName, Type type, NodeWithAnnotations<?> site, CompilationUnit cu, int line,
             Map<String, TypeEntry> typeTable, Map<String, BeanDefinition> beans,
             Map<String, List<String>> implementations) {
-        Type type = variable.getType();
         if (type.isPrimitiveType() || !(type instanceof ClassOrInterfaceType cit)) {
             return Optional.empty();
         }
         String rawName = cit.getNameAsString();
         String declared = cit.asString();
-        int line = field.getBegin().map(p -> p.line).orElse(-1);
 
         if (NON_BEAN_SIMPLE_TYPES.contains(rawName) || isJdkQualified(declared)) {
             return Optional.empty();
         }
         if (COLLECTION_TYPES.contains(rawName)) {
-            return Optional.of(new BeanEdge(variable.getNameAsString(), declared, null,
-                    BeanEdge.STATUS_UNRESOLVED, null, BeanEdge.REASON_COLLECTION_INJECTION,
-                    null, List.of(), line));
+            return Optional.of(collectionEdge(siteName, cit, cu, line, typeTable, beans, implementations));
         }
 
-        Optional<TypeEntry> resolved = entryOf(cit, owner.cu(), typeTable);
+        Optional<TypeEntry> resolved = entryOf(cit, cu, typeTable);
         if (resolved.isEmpty()) {
-            return Optional.of(new BeanEdge(variable.getNameAsString(), declared,
-                    importedFqcn(rawName, owner.cu()).orElse(null),
+            return Optional.of(new BeanEdge(siteName, declared,
+                    importedFqcn(rawName, cu).orElse(null),
                     BeanEdge.STATUS_NOT_A_SCANNED_BEAN, null, null, null, List.of(), line));
         }
         String fqcn = resolved.get().decl().getFullyQualifiedName().orElse(rawName);
-        String fieldName = variable.getNameAsString();
 
         BeanDefinition direct = beans.get(fqcn);
         if (direct != null && !resolved.get().decl().isInterface()) {
-            return Optional.of(resolvedEdge(fieldName, declared, fqcn, BeanEdge.KIND_CONCRETE, direct, line));
+            return Optional.of(resolvedEdge(siteName, declared, fqcn, BeanEdge.KIND_CONCRETE, direct, line));
         }
         if (direct != null && direct.terminal()) {
-            return Optional.of(resolvedEdge(fieldName, declared, fqcn, BeanEdge.KIND_TERMINAL, direct, line));
+            return Optional.of(resolvedEdge(siteName, declared, fqcn, BeanEdge.KIND_TERMINAL, direct, line));
         }
         if (resolved.get().decl().isInterface()) {
-            return Optional.of(interfaceEdge(field, fieldName, declared, fqcn,
+            return Optional.of(interfaceEdge(site, siteName, declared, fqcn,
                     typeTable, beans, implementations, line));
         }
         // A scanned concrete class that is not a bean: injectable only via configuration
         // the index does not see, so report it as outside the bean universe.
-        return Optional.of(new BeanEdge(fieldName, declared, fqcn,
+        return Optional.of(new BeanEdge(siteName, declared, fqcn,
                 BeanEdge.STATUS_NOT_A_SCANNED_BEAN, null, null, null, List.of(), line));
     }
 
+    /**
+     * Resolves a {@code List}/{@code Set}/{@code Collection}/{@code Map<String, _>} site to
+     * ALL element implementations (Spring binds every matching bean). Raw types and maps
+     * with non-String keys stay reported as collection-injection.
+     */
+    private static BeanEdge collectionEdge(
+            String siteName, ClassOrInterfaceType cit, CompilationUnit cu, int line,
+            Map<String, TypeEntry> typeTable, Map<String, BeanDefinition> beans,
+            Map<String, List<String>> implementations) {
+        String declared = cit.asString();
+        Type elementType = null;
+        if (cit.getTypeArguments().isPresent()) {
+            List<Type> args = cit.getTypeArguments().get();
+            if (cit.getNameAsString().equals("Map")) {
+                if (args.size() == 2 && args.get(0) instanceof ClassOrInterfaceType key
+                        && key.getNameAsString().equals("String")) {
+                    elementType = args.get(1);
+                }
+            } else if (args.size() == 1) {
+                elementType = args.get(0);
+            }
+        }
+        if (!(elementType instanceof ClassOrInterfaceType element)) {
+            return new BeanEdge(siteName, declared, null, BeanEdge.STATUS_UNRESOLVED,
+                    null, BeanEdge.REASON_COLLECTION_INJECTION, null, List.of(), line);
+        }
+
+        Optional<TypeEntry> resolved = entryOf(element, cu, typeTable);
+        if (resolved.isEmpty()) {
+            return new BeanEdge(siteName, declared,
+                    importedFqcn(element.getNameAsString(), cu).orElse(null),
+                    BeanEdge.STATUS_NOT_A_SCANNED_BEAN, null, null, null, List.of(), line);
+        }
+        String elementFqcn = resolved.get().decl().getFullyQualifiedName()
+                .orElse(element.getNameAsString());
+        BeanDefinition direct = beans.get(elementFqcn);
+        if (!resolved.get().decl().isInterface()) {
+            return direct != null
+                    ? collectionResolved(siteName, declared, elementFqcn, List.of(direct), line)
+                    : new BeanEdge(siteName, declared, elementFqcn,
+                            BeanEdge.STATUS_NOT_A_SCANNED_BEAN, null, null, null, List.of(), line);
+        }
+        if (direct != null && direct.terminal()) {
+            return collectionResolved(siteName, declared, elementFqcn, List.of(direct), line);
+        }
+        List<BeanDefinition> elements = implementations.getOrDefault(elementFqcn, List.of()).stream()
+                .map(beans::get)
+                .toList();
+        if (elements.isEmpty()) {
+            return new BeanEdge(siteName, declared, elementFqcn, BeanEdge.STATUS_UNRESOLVED,
+                    null, BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, null, List.of(), line);
+        }
+        return collectionResolved(siteName, declared, elementFqcn, elements, line);
+    }
+
+    private static BeanEdge collectionResolved(
+            String siteName, String declared, String elementFqcn, List<BeanDefinition> elements, int line) {
+        return new BeanEdge(siteName, declared, elementFqcn, BeanEdge.STATUS_RESOLVED,
+                BeanEdge.KIND_COLLECTION, null, null, elements, line);
+    }
+
     private static BeanEdge interfaceEdge(
-            FieldDeclaration field, String fieldName, String declared, String ifaceFqcn,
+            NodeWithAnnotations<?> site, String fieldName, String declared, String ifaceFqcn,
             Map<String, TypeEntry> typeTable, Map<String, BeanDefinition> beans,
             Map<String, List<String>> implementations, int line) {
         List<BeanDefinition> candidates = implementations.getOrDefault(ifaceFqcn, List.of()).stream()
@@ -241,8 +352,8 @@ public final class BeanIndex {
                     null, BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, null, List.of(), line);
         }
 
-        // @Qualifier on the field beats everything, per Spring semantics.
-        Optional<String> qualifier = annotationStringValue(field, "Qualifier");
+        // @Qualifier on the site beats everything, per Spring semantics.
+        Optional<String> qualifier = annotationStringValue(site, "Qualifier");
         if (qualifier.isPresent()) {
             Optional<BeanDefinition> named = candidates.stream()
                     .filter(c -> beanName(c, typeTable).equals(qualifier.get()))
@@ -309,13 +420,16 @@ public final class BeanIndex {
                 .anyMatch(n -> n.equals("Profile") || n.startsWith("ConditionalOn"));
     }
 
-    private static Optional<String> stereotypeOf(ClassOrInterfaceDeclaration decl) {
+    private static Optional<String> stereotypeOf(ClassOrInterfaceDeclaration decl, Set<String> customStereotypes) {
         for (String stereotype : STEREOTYPES) {
             if (hasAnnotation(decl, stereotype)) {
                 return Optional.of(stereotype);
             }
         }
-        return Optional.empty();
+        return decl.getAnnotations().stream()
+                .map(BeanIndex::simpleNameOf)
+                .filter(customStereotypes::contains)
+                .findFirst();
     }
 
     /**

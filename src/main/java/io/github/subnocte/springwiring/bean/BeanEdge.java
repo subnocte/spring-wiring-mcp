@@ -49,12 +49,18 @@ public record BeanEdge(
     public static final String KIND_QUALIFIER = "qualifier";
     /** Terminal bean interface (MyBatis mapper / Spring Data repository). */
     public static final String KIND_TERMINAL = "terminal";
+    /**
+     * Collection/map site ({@code List<X>}, {@code Set<X>}, {@code Map<String, X>}):
+     * Spring binds every matching bean, so {@code target} is null and {@code candidates}
+     * holds all bound element implementations.
+     */
+    public static final String KIND_COLLECTION = "collection";
 
     /** Multiple implementations and neither {@code @Primary} nor a matching {@code @Qualifier} decides. */
     public static final String REASON_MULTIPLE_CANDIDATES = "multiple-candidates";
     /** The interface is in the scanned sources but nothing implements it there. */
     public static final String REASON_NO_IMPLEMENTATION_FOUND = "no-implementation-found";
-    /** Collection/map injection ({@code List<X>}, {@code Map<String, X>}) is not resolved in v1. */
+    /** A collection/map site the analysis cannot expand: raw type, or a map key other than String. */
     public static final String REASON_COLLECTION_INJECTION = "collection-injection";
     /** A candidate carries {@code @Profile}/{@code @ConditionalOn...}: the winner is environment-dependent. */
     public static final String REASON_CONDITIONAL_CANDIDATES = "conditional-candidates";
