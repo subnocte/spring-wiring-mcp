@@ -639,7 +639,51 @@ public final class BeanIndex {
 
     /** Traverses resolved dependency edges breadth-first from the bean with this FQCN. */
     public TraceResult reachableFrom(String fqcn) {
-        return new TraceResult(List.of(), List.of(), List.of());
+        List<TraceStep> steps = new ArrayList<>();
+        List<BeanDefinition> terminals = new ArrayList<>();
+        List<BlockedSite> blocked = new ArrayList<>();
+        Set<String> visited = new java.util.HashSet<>();
+        java.util.ArrayDeque<Map.Entry<String, Integer>> queue = new java.util.ArrayDeque<>();
+
+        if (!beansByFqcn.containsKey(fqcn)) {
+            return new TraceResult(List.of(), List.of(), List.of());
+        }
+        visited.add(fqcn);
+        queue.add(Map.entry(fqcn, 0));
+
+        while (!queue.isEmpty()) {
+            Map.Entry<String, Integer> current = queue.poll();
+            BeanDependencies deps = dependenciesByFqcn.get(current.getKey());
+            if (deps == null) {
+                continue;
+            }
+            int depth = current.getValue() + 1;
+            for (BeanEdge edge : deps.edges()) {
+                if (BeanEdge.STATUS_UNRESOLVED.equals(edge.status())) {
+                    blocked.add(new BlockedSite(deps.bean(), edge));
+                    continue;
+                }
+                if (!BeanEdge.STATUS_RESOLVED.equals(edge.status())) {
+                    continue;
+                }
+                List<BeanDefinition> targets = edge.target() != null
+                        ? List.of(edge.target())
+                        : edge.candidates();
+                for (BeanDefinition target : targets) {
+                    // a hop to an already-visited bean is still a real edge: report
+                    // the step, just don't expand the target again
+                    steps.add(new TraceStep(deps.bean(), edge, target, depth));
+                    if (target.terminal() && terminals.stream()
+                            .noneMatch(t -> t.fqcn().equals(target.fqcn()))) {
+                        terminals.add(target);
+                    }
+                    if (visited.add(target.fqcn())) {
+                        queue.add(Map.entry(target.fqcn(), depth));
+                    }
+                }
+            }
+        }
+        return new TraceResult(List.copyOf(steps), List.copyOf(terminals), List.copyOf(blocked));
     }
 
     /** Count of unresolved dependency sites across all beans, grouped by reason. */
