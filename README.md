@@ -6,8 +6,6 @@ An MCP server that statically resolves Spring Boot's implicit wiring, so an AI c
 
 Generic code-search / code-analysis MCP servers can grep for `@GetMapping` and hand back a list of matches, but they don't understand Spring's own resolution semantics: which candidate actually wins once `@Primary`, `@Qualifier`, `@Profile`, conditional beans, and AOP proxies are taken into account. That's the gap this project targets — Spring-aware wiring resolution, not generic text search.
 
-The first milestone, described below, only covers REST endpoint resolution. The bean-graph features that motivate the "generic tools don't understand this" pitch are on the [roadmap](#roadmap).
-
 ## What it does today (Milestone 1: REST endpoint resolution)
 
 Point it at a Spring Boot codebase and ask, in one tool call:
@@ -29,11 +27,28 @@ When there's no exact match, it returns the closest candidates instead of an emp
 
 The tool declares MCP tool annotations (`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: false`), so clients know up front that it's a safe, retryable, local-only lookup that never mutates anything.
 
+## Bean dependency graph (Milestone 2: `beanDependencies`)
+
+Ask, in one tool call:
+
+> "What beans does `AdGroupService` depend on, and where is each one defined?"
+
+and get back every dependency resolved to the bean that wins at injection time, with file and line. Dependencies are modeled as the bean's instance fields — one rule that covers field `@Autowired`, Lombok `@AllArgsConstructor`/`@RequiredArgsConstructor`, and hand-written constructor injection without expanding Lombok. (The one blind spot, by design: a constructor parameter never stored in a field. That produces a missing edge, never a wrong one.)
+
+Resolution follows Spring's semantics:
+- a concrete bean class resolves to itself; an interface resolves to its single scanned implementation, the `@Primary` one, or the one a field `@Qualifier` names (qualifier beats primary)
+- MyBatis `@Mapper` interfaces and Spring Data repositories are *terminal beans* — including repositories built on a project-local base interface, followed transitively through the extends chain
+- `@Bean` factory-method return types join the bean universe (their own parameter wiring is not analyzed yet)
+- sites that cannot be decided statically are reported with a reason and the candidate list, never guessed: multiple candidates without a disambiguator, candidates behind `@Profile`/`@ConditionalOn...` (the winner is environment-dependent), collection injection (`List<X>`/`Map<K, X>`), and interfaces with no scanned implementation
+
 ### Never silently wrong
 
-Mappings the static analysis cannot resolve — wildcard patterns (`*` / `**`), string-concatenation paths, mappings on interfaces generated outside the scanned sources (e.g. by openapi-generator) — are never indexed under a guessed value and never silently dropped. They are collected as *unresolved mappings* (file, line, reason) and self-reported:
+Anything the static analysis cannot resolve is reported, never guessed and never silently dropped:
 
-- a second tool, `indexStatus`, returns the index's coverage up front: endpoint count, scanned file count, and every unresolved mapping with its reason — call it first to know how much to trust the index for a given project
+- endpoint mappings it can't resolve — wildcard patterns (`*` / `**`), string-concatenation paths, mappings on interfaces generated outside the scanned sources (e.g. by openapi-generator) — are collected as *unresolved mappings* (file, line, reason)
+- bean injection sites it can't decide are reported per-edge with a reason and the candidates
+- files the parser cannot process are reported as *parse failures* instead of silently vanishing from the index (sources are parsed at the Java 21 language level)
+- the `indexStatus` tool returns all of this coverage up front: endpoint count, bean count, scanned file count, unresolved mappings, unresolved injections by reason, and parse failures — call it first to know how much to trust the index for a given project
 - when `resolveEndpoint` misses, the response includes the unresolved mappings alongside the close-match suggestions, since the endpoint you're looking for may be among them
 
 ## Installation
@@ -88,7 +103,7 @@ The server communicates over stdio, so it's launched as a subprocess by the MCP 
 
 ## Roadmap
 
-- **Bean dependency graph**: resolve `@Autowired`/`@Qualifier`/`@Primary` to the concrete bean that wins at injection time, including conditional (`@Profile`, `@ConditionalOn...`) beans
+- **Bean graph completion**: reverse lookup (`beanDependents`), collection injection (`List<X>` → all implementations), `@Bean` method parameter wiring, meta-annotations / custom stereotypes, setter injection
 - **Endpoint → Repository tracing**: follow a handler method down through service and repository layers to the persistence boundary
 - **`@Transactional` boundary visualization**: show where transactional boundaries actually start and end once self-invocation and AOP proxying are accounted for
 
