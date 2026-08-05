@@ -20,8 +20,10 @@ It understands:
 - `@RestController` and `@Controller`
 - Class-level `@RequestMapping` combined with method-level `@GetMapping` / `@PostMapping` / `@PutMapping` / `@DeleteMapping` / `@PatchMapping` / `@RequestMapping(method = ...)`
 - Path variables (`/users/{id}`) when matching a concrete request path
-- Multiple HTTP methods on one mapping (`@RequestMapping(method = {GET, POST})`)
+- Multiple HTTP methods on one mapping (`@RequestMapping(method = {GET, POST})`), including statically imported `RequestMethod` constants (`method = GET`)
 - `@RequestMapping` with no `method` attribute, which Spring treats as matching any HTTP method
+- Paths referenced through `static final String` constants — same class, other scanned classes via qualified access, or static imports
+- Mappings declared on an implemented interface when its source is under the scanned root (common with interface-driven controllers), following Spring's precedence rules: implementation annotations win, class-level prefixes are not concatenated
 
 When there's no exact match, it returns the closest candidates instead of an empty result, so the agent isn't left guessing why a route "isn't there."
 
@@ -29,7 +31,7 @@ The tool declares MCP tool annotations (`readOnlyHint: true`, `destructiveHint: 
 
 ### Never silently wrong
 
-Mappings the static analysis cannot resolve — constant-referenced paths (`@GetMapping(SOME_CONSTANT)`), wildcard patterns (`*` / `**`), non-literal expressions — are never indexed under a guessed value and never silently dropped. They are collected as *unresolved mappings* (file, line, reason) and self-reported:
+Mappings the static analysis cannot resolve — wildcard patterns (`*` / `**`), string-concatenation paths, mappings on interfaces generated outside the scanned sources (e.g. by openapi-generator) — are never indexed under a guessed value and never silently dropped. They are collected as *unresolved mappings* (file, line, reason) and self-reported:
 
 - a second tool, `indexStatus`, returns the index's coverage up front: endpoint count, scanned file count, and every unresolved mapping with its reason — call it first to know how much to trust the index for a given project
 - when `resolveEndpoint` misses, the response includes the unresolved mappings alongside the close-match suggestions, since the endpoint you're looking for may be among them

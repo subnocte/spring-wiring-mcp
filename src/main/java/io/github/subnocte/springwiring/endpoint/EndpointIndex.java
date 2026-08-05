@@ -62,6 +62,10 @@ public final class EndpointIndex {
     /** HTTP method used when a mapping annotation does not restrict the method. */
     public static final String ANY_METHOD = "ANY";
 
+    /** Names of org.springframework.web.bind.annotation.RequestMethod enum constants. */
+    private static final Set<String> REQUEST_METHOD_NAMES = Set.of(
+            "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE");
+
     private final List<EndpointHandler> handlers;
     private final List<UnresolvedMapping> unresolved;
     private final int scannedFileCount;
@@ -356,7 +360,7 @@ public final class EndpointIndex {
         String simpleName = mapping.getNameAsString();
         String location = fqcn + "#" + method.getNameAsString();
 
-        HttpMethodsAttr methodsAttr = resolveHttpMethods(mapping, simpleName);
+        HttpMethodsAttr methodsAttr = resolveHttpMethods(mapping, simpleName, valueOf);
         if (methodsAttr.nonLiteral() != null) {
             unresolvedOut.add(new UnresolvedMapping(
                     handlerFile.toString(), handlerLine, location, reasonFor(methodsAttr.nonLiteral())));
@@ -411,7 +415,8 @@ public final class EndpointIndex {
     private record HttpMethodsAttr(List<String> methods, Expression nonLiteral) {
     }
 
-    private static HttpMethodsAttr resolveHttpMethods(AnnotationExpr mapping, String simpleName) {
+    private static HttpMethodsAttr resolveHttpMethods(
+            AnnotationExpr mapping, String simpleName, java.util.function.Function<Expression, String> valueOf) {
         if (SHORTHAND_MAPPINGS.containsKey(simpleName)) {
             return new HttpMethodsAttr(List.of(SHORTHAND_MAPPINGS.get(simpleName)), null);
         }
@@ -420,18 +425,35 @@ public final class EndpointIndex {
         }
         for (MemberValuePair pair : normal.getPairs()) {
             if (pair.getNameAsString().equals("method")) {
-                List<String> methods = expressionValues(pair.getValue(), EndpointIndex::fieldAccessName);
-                if (methods.isEmpty()) {
-                    return new HttpMethodsAttr(List.of(), firstExpression(pair.getValue()));
+                List<String> methods = expressionValues(pair.getValue(), expr -> httpMethodName(expr, valueOf));
+                Expression unextracted = firstUnextractable(pair.getValue(), expr -> httpMethodName(expr, valueOf));
+                if (unextracted != null) {
+                    return new HttpMethodsAttr(List.of(), unextracted);
                 }
-                return new HttpMethodsAttr(methods, null);
+                return methods.isEmpty()
+                        ? new HttpMethodsAttr(List.of(ANY_METHOD), null)
+                        : new HttpMethodsAttr(methods, null);
             }
         }
         return new HttpMethodsAttr(List.of(ANY_METHOD), null);
     }
 
-    private static String fieldAccessName(Expression expr) {
-        return expr instanceof FieldAccessExpr fae ? fae.getNameAsString() : null;
+    /**
+     * Evaluates a method-attribute component: {@code RequestMethod.GET} style field access, or
+     * a statically imported enum name ({@code method = GET}). A bare name is only accepted when
+     * it does not resolve to a string constant in scope, so a shadowing local constant is never
+     * misread as an HTTP method.
+     */
+    private static String httpMethodName(Expression expr, java.util.function.Function<Expression, String> valueOf) {
+        if (expr instanceof FieldAccessExpr fae) {
+            return fae.getNameAsString();
+        }
+        if (expr instanceof NameExpr name
+                && REQUEST_METHOD_NAMES.contains(name.getNameAsString())
+                && valueOf.apply(name) == null) {
+            return name.getNameAsString();
+        }
+        return null;
     }
 
     /**

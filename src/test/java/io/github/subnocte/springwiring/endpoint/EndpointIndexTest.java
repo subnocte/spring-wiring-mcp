@@ -111,7 +111,7 @@ class EndpointIndexTest {
     void unresolvableMappingsAreReportedNotSilentlySkipped() {
         var unresolved = index.unresolved();
 
-        assertThat(unresolved).hasSize(3);
+        assertThat(unresolved).hasSize(4);
 
         // string concatenation stays unresolvable
         var concat = unresolved.stream()
@@ -126,10 +126,13 @@ class EndpointIndexTest {
                 .findFirst().orElseThrow();
         assertThat(wildcard.location()).endsWith("ConstantPathController#files");
 
-        // simple constant references are resolvable now, so none may remain unresolved
-        assertThat(unresolved)
-                .extracting(UnresolvedMapping::reason)
-                .doesNotContain(UnresolvedMapping.REASON_CONSTANT_REFERENCE);
+        // path constant references are resolvable now; the only constant-reference left is
+        // the shadowed method attribute in StaticImportMethodController
+        var constantRefs = unresolved.stream()
+                .filter(u -> u.reason().equals(UnresolvedMapping.REASON_CONSTANT_REFERENCE))
+                .toList();
+        assertThat(constantRefs).hasSize(1);
+        assertThat(constantRefs.get(0).location()).endsWith("StaticImportMethodController#shadow");
     }
 
     @org.junit.jupiter.api.Test
@@ -204,5 +207,24 @@ class EndpointIndexTest {
         assertThat(missing).hasSize(1);
         assertThat(missing.get(0).location()).endsWith("GeneratedStubController");
         assertThat(missing.get(0).filePath()).endsWith("GeneratedStubController.java");
+    }
+
+    @org.junit.jupiter.api.Test
+    void staticImportedRequestMethodConstantsAreResolved() {
+        var get = index.resolve("GET", "/si/echo");
+        assertThat(get).isPresent();
+        assertThat(get.get().methodName()).isEqualTo("echo");
+        assertThat(index.resolve("POST", "/si/echo")).isEmpty();
+
+        assertThat(index.resolve("GET", "/si/multi")).isPresent();
+        assertThat(index.resolve("POST", "/si/multi")).isPresent();
+        assertThat(index.resolve("DELETE", "/si/multi")).isEmpty();
+    }
+
+    @org.junit.jupiter.api.Test
+    void shadowedRequestMethodNameIsNotMisreadAsHttpMethod() {
+        // PUT resolves to a same-class String constant, not RequestMethod.PUT:
+        // must be reported unresolved, never indexed as HTTP PUT
+        assertThat(index.resolve("PUT", "/si/shadow")).isEmpty();
     }
 }

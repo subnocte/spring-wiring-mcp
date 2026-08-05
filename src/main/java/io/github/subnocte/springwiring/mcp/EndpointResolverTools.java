@@ -30,10 +30,13 @@ public class EndpointResolverTools {
             name = "resolveEndpoint",
             description = "Resolves an HTTP method + path to the Spring MVC controller method that handles it, "
                     + "including the source file and line number. Understands @RestController/@Controller, "
-                    + "class-level @RequestMapping combined with method-level mappings, and {var} path variables. "
-                    + "Constant-referenced paths and wildcard patterns (* / **) are NOT resolved; they are "
-                    + "reported as unresolved mappings instead of being silently dropped. On a miss, returns "
-                    + "close-match suggestions plus the unresolved mappings the endpoint might be hiding in.",
+                    + "class-level @RequestMapping combined with method-level mappings, {var} path variables, "
+                    + "paths referenced via static final String constants, mappings declared on implemented "
+                    + "in-repo interfaces, and statically imported RequestMethod constants. Wildcard patterns "
+                    + "(* / **), string-concatenation paths, and interfaces generated outside the scanned "
+                    + "sources are NOT resolved; they are reported as unresolved mappings instead of being "
+                    + "silently dropped. On a miss, returns close-match suggestions plus the unresolved "
+                    + "mappings the endpoint might be hiding in.",
             // Pure lookup against an in-memory index built from local sources: safe to
             // call freely, safe to retry, and touches nothing outside the indexed codebase.
             annotations = @McpTool.McpAnnotations(

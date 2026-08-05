@@ -34,15 +34,16 @@ class EndpointResolverToolsTest {
 
         assertThat(result.found()).isFalse();
         assertThat(result.suggestions()).isNotEmpty();
-        assertThat(result.unresolvedCount()).isEqualTo(3);
+        assertThat(result.unresolvedCount()).isEqualTo(4);
         assertThat(result.unresolvedMappings())
-                .hasSize(3)
+                .hasSize(4)
                 .extracting(UnresolvedMapping::reason)
                 .containsExactlyInAnyOrder(
                         UnresolvedMapping.REASON_NON_LITERAL_EXPRESSION,
                         UnresolvedMapping.REASON_UNSUPPORTED_PATTERN,
-                        UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND);
-        assertThat(result.warning()).contains("3");
+                        UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND,
+                        UnresolvedMapping.REASON_CONSTANT_REFERENCE);
+        assertThat(result.warning()).contains("4");
     }
 
     @Test
@@ -51,7 +52,7 @@ class EndpointResolverToolsTest {
 
         assertThat(result.found()).isTrue();
         assertThat(result.match().methodName()).isEqualTo("health");
-        assertThat(result.unresolvedCount()).isEqualTo(3);
+        assertThat(result.unresolvedCount()).isEqualTo(4);
         assertThat(result.unresolvedMappings()).isEmpty();
         assertThat(result.warning()).isNull();
     }
@@ -62,11 +63,12 @@ class EndpointResolverToolsTest {
 
         assertThat(status.endpointCount()).isEqualTo(index.all().size());
         assertThat(status.scannedFileCount()).isEqualTo(index.scannedFileCount());
-        assertThat(status.unresolvedCount()).isEqualTo(3);
+        assertThat(status.unresolvedCount()).isEqualTo(4);
         assertThat(status.unresolvedByReason())
                 .containsEntry(UnresolvedMapping.REASON_NON_LITERAL_EXPRESSION, 1L)
                 .containsEntry(UnresolvedMapping.REASON_UNSUPPORTED_PATTERN, 1L)
-                .containsEntry(UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND, 1L);
-        assertThat(status.unresolvedMappings()).hasSize(3);
+                .containsEntry(UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND, 1L)
+                .containsEntry(UnresolvedMapping.REASON_CONSTANT_REFERENCE, 1L);
+        assertThat(status.unresolvedMappings()).hasSize(4);
     }
 }
