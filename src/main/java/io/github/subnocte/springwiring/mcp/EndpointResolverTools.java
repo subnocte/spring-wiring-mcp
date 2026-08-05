@@ -131,7 +131,7 @@ public class EndpointResolverTools {
             int beanCount,
             Map<String, Long> unresolvedInjectionsByReason,
             int parseFailureCount,
-            List<io.github.subnocte.springwiring.endpoint.ParseFailure> parseFailures
+            List<io.github.subnocte.springwiring.scanner.ParseFailure> parseFailures
     ) {
     }
 }

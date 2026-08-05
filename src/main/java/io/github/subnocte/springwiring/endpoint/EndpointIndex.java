@@ -1,6 +1,5 @@
 package io.github.subnocte.springwiring.endpoint;
 
-import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -17,8 +16,8 @@ import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
+import io.github.subnocte.springwiring.scanner.ParseFailure;
+
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -68,17 +67,23 @@ public final class EndpointIndex {
 
     private final List<EndpointHandler> handlers;
     private final List<UnresolvedMapping> unresolved;
+    private final List<ParseFailure> parseFailures;
     private final int scannedFileCount;
 
-    /** Files the parser could not process; stub until parse-failure reporting lands. */
-    public List<ParseFailure> parseFailures() {
-        return List.of();
-    }
-
-    private EndpointIndex(List<EndpointHandler> handlers, List<UnresolvedMapping> unresolved, int scannedFileCount) {
+    private EndpointIndex(List<EndpointHandler> handlers, List<UnresolvedMapping> unresolved,
+                          List<ParseFailure> parseFailures, int scannedFileCount) {
         this.handlers = List.copyOf(handlers);
         this.unresolved = List.copyOf(unresolved);
+        this.parseFailures = List.copyOf(parseFailures);
         this.scannedFileCount = scannedFileCount;
+    }
+
+    /**
+     * Files the parser could not process. Such a file is invisible to the whole analysis —
+     * its endpoints simply don't exist in the index — so every failure is reported.
+     */
+    public List<ParseFailure> parseFailures() {
+        return parseFailures;
     }
 
     /** Scans {@code root} recursively and builds an index from every {@code .java} file found. */
@@ -94,18 +99,13 @@ public final class EndpointIndex {
     private record TypeEntry(ClassOrInterfaceDeclaration decl, CompilationUnit cu, Path path) {
     }
 
-    /** Builds an index from an explicit list of source files. Files that fail to parse are skipped. */
+    /** Builds an index from an explicit list of source files. Files that fail to parse are reported. */
     public static EndpointIndex build(List<Path> sourceFiles) {
-        List<ParsedUnit> units = new ArrayList<>();
-        for (Path file : sourceFiles) {
-            try {
-                units.add(new ParsedUnit(StaticJavaParser.parse(file), file));
-            } catch (IOException e) {
-                throw new UncheckedIOException("Failed to read source file: " + file, e);
-            } catch (com.github.javaparser.ParseProblemException e) {
-                // Skip unparsable files; a single malformed file should not abort the whole index.
-            }
-        }
+        io.github.subnocte.springwiring.scanner.ParsedSources parsed =
+                io.github.subnocte.springwiring.scanner.ParsedSources.parse(sourceFiles);
+        List<ParsedUnit> units = parsed.units().stream()
+                .map(u -> new ParsedUnit(u.cu(), u.path()))
+                .toList();
 
         Map<String, TypeEntry> typeTable = new HashMap<>();
         for (ParsedUnit unit : units) {
@@ -148,7 +148,7 @@ public final class EndpointIndex {
                 }
             }
         }
-        return new EndpointIndex(collected, unresolvedCollected, sourceFiles.size());
+        return new EndpointIndex(collected, unresolvedCollected, parsed.failures(), sourceFiles.size());
     }
 
     /** Shared lookup tables for one build pass. */

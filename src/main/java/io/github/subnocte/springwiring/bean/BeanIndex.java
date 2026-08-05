@@ -1,6 +1,5 @@
 package io.github.subnocte.springwiring.bean;
 
-import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -14,10 +13,9 @@ import com.github.javaparser.ast.nodeTypes.NodeWithAnnotations;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.Type;
 
+import io.github.subnocte.springwiring.scanner.ParsedSources;
 import io.github.subnocte.springwiring.scanner.SourceScanner;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -79,18 +77,12 @@ public final class BeanIndex {
     private record TypeEntry(ClassOrInterfaceDeclaration decl, CompilationUnit cu, Path path) {
     }
 
-    /** Builds an index from an explicit list of source files. Files that fail to parse are skipped. */
+    /** Builds an index from an explicit list of source files. Files that fail to parse are reported
+     * through the endpoint index's parse-failure list (both indexes share the parsing front-end). */
     public static BeanIndex build(List<Path> sourceFiles) {
-        List<ParsedUnit> units = new ArrayList<>();
-        for (Path file : sourceFiles) {
-            try {
-                units.add(new ParsedUnit(StaticJavaParser.parse(file), file));
-            } catch (IOException e) {
-                throw new UncheckedIOException("Failed to read source file: " + file, e);
-            } catch (com.github.javaparser.ParseProblemException e) {
-                // Skip unparsable files; a single malformed file should not abort the whole index.
-            }
-        }
+        List<ParsedUnit> units = ParsedSources.parse(sourceFiles).units().stream()
+                .map(u -> new ParsedUnit(u.cu(), u.path()))
+                .toList();
 
         Map<String, TypeEntry> typeTable = new HashMap<>();
         for (ParsedUnit unit : units) {
