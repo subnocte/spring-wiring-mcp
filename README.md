@@ -105,7 +105,7 @@ The server communicates over stdio, so it's launched as a subprocess by the MCP 
 }
 ```
 
-`CODE_ROOT` can also be supplied as a command-line argument instead of an environment variable: `--code.root=/absolute/path/to/target-spring-boot-project` (Spring Boot's relaxed property binding maps both to the same `code.root` property). The index is built once at startup and held in memory for the lifetime of the process.
+`CODE_ROOT` can also be supplied as a command-line argument instead of an environment variable: `--code.root=/absolute/path/to/target-spring-boot-project` (Spring Boot's relaxed property binding maps both to the same `code.root` property). The index is built at startup and held in memory, and stays consistent with the sources: every tool call checks a cheap per-file fingerprint (path, size, mtime) and rebuilds the index before answering if anything under `CODE_ROOT` was added, edited, or deleted — answers always reflect the code on disk at call time.
 
 ## Roadmap
 
