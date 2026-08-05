@@ -222,6 +222,17 @@ class EndpointIndexTest {
     }
 
     @org.junit.jupiter.api.Test
+    void buildOutputAndTestSourcesAreNeverIndexed() {
+        // GhostController lives under build/generated, TestOnlyController under src/test:
+        // neither is production code, so neither may appear as an endpoint
+        assertThat(index.resolve("GET", "/ghost")).isEmpty();
+        assertThat(index.resolve("GET", "/test-only")).isEmpty();
+        assertThat(index.all())
+                .noneMatch(h -> h.fqcn().contains("GhostController")
+                        || h.fqcn().contains("TestOnlyController"));
+    }
+
+    @org.junit.jupiter.api.Test
     void shadowedRequestMethodNameIsNotMisreadAsHttpMethod() {
         // PUT resolves to a same-class String constant, not RequestMethod.PUT:
         // must be reported unresolved, never indexed as HTTP PUT
