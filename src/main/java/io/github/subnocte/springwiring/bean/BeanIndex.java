@@ -107,8 +107,9 @@ public final class BeanIndex {
                 } else if (hasAnnotation(decl, "Mapper")) {
                     beans.put(fqcn, new BeanDefinition(fqcn, "Mapper", unit.path().toString(), line, true));
                 } else {
-                    repositoryBaseOf(decl).ifPresent(base -> beans.put(fqcn,
-                            new BeanDefinition(fqcn, base, unit.path().toString(), line, true)));
+                    repositoryBaseOf(decl, unit.cu(), typeTable, new java.util.HashSet<>())
+                            .ifPresent(base -> beans.put(fqcn,
+                                    new BeanDefinition(fqcn, base, unit.path().toString(), line, true)));
                 }
             }
         }
@@ -317,11 +318,35 @@ public final class BeanIndex {
         return Optional.empty();
     }
 
-    private static Optional<String> repositoryBaseOf(ClassOrInterfaceDeclaration decl) {
-        return decl.getExtendedTypes().stream()
-                .map(ClassOrInterfaceType::getNameAsString)
-                .filter(REPOSITORY_BASES::contains)
-                .findFirst();
+    /**
+     * The Spring Data base this interface is built on, if any — followed transitively
+     * through scanned interfaces, because real codebases insert project-local base
+     * interfaces between their repositories and Spring Data.
+     */
+    private static Optional<String> repositoryBaseOf(
+            ClassOrInterfaceDeclaration decl, CompilationUnit cu,
+            Map<String, TypeEntry> typeTable, Set<String> visited) {
+        for (ClassOrInterfaceType extended : decl.getExtendedTypes()) {
+            if (REPOSITORY_BASES.contains(extended.getNameAsString())) {
+                return Optional.of(extended.getNameAsString());
+            }
+        }
+        for (ClassOrInterfaceType extended : decl.getExtendedTypes()) {
+            Optional<TypeEntry> parent = entryOf(extended, cu, typeTable);
+            if (parent.isEmpty() || !parent.get().decl().isInterface()) {
+                continue;
+            }
+            String parentFqcn = parent.get().decl().getFullyQualifiedName().orElse(null);
+            if (parentFqcn == null || !visited.add(parentFqcn)) {
+                continue;
+            }
+            Optional<String> base = repositoryBaseOf(
+                    parent.get().decl(), parent.get().cu(), typeTable, visited);
+            if (base.isPresent()) {
+                return base;
+            }
+        }
+        return Optional.empty();
     }
 
     private static boolean hasAnnotation(NodeWithAnnotations<?> node, String simpleName) {
