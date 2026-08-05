@@ -27,7 +27,7 @@ When there's no exact match, it returns the closest candidates instead of an emp
 
 The tool declares MCP tool annotations (`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: false`), so clients know up front that it's a safe, retryable, local-only lookup that never mutates anything.
 
-## Bean dependency graph (Milestone 2: `beanDependencies`)
+## Bean dependency graph (Milestone 2: `beanDependencies` / `beanDependents`)
 
 Ask, in one tool call:
 
@@ -40,6 +40,12 @@ Resolution follows Spring's semantics:
 - MyBatis `@Mapper` interfaces and Spring Data repositories are *terminal beans* — including repositories built on a project-local base interface, followed transitively through the extends chain
 - `@Bean` factory-method return types join the bean universe (their own parameter wiring is not analyzed yet)
 - sites that cannot be decided statically are reported with a reason and the candidate list, never guessed: multiple candidates without a disambiguator, candidates behind `@Profile`/`@ConditionalOn...` (the winner is environment-dependent), collection injection (`List<X>`/`Map<K, X>`), and interfaces with no scanned implementation
+
+`beanDependents` is the reverse direction — impact analysis before changing a bean or its contract:
+
+> "Who depends on `TAdGroupRepository`?"
+
+returns every bean whose dependency sites reference the queried class or interface, each tagged with how: resolved to it (`target`), declared as the field's type (`declared-type`), or listed among an unresolved site's candidates (`candidate` — a *possible* dependent, surfaced rather than hidden).
 
 ### Never silently wrong
 
@@ -103,7 +109,7 @@ The server communicates over stdio, so it's launched as a subprocess by the MCP 
 
 ## Roadmap
 
-- **Bean graph completion**: reverse lookup (`beanDependents`), collection injection (`List<X>` → all implementations), `@Bean` method parameter wiring, meta-annotations / custom stereotypes, setter injection
+- **Bean graph completion**: collection injection (`List<X>` → all implementations), `@Bean` method parameter wiring, meta-annotations / custom stereotypes, setter injection
 - **Endpoint → Repository tracing**: follow a handler method down through service and repository layers to the persistence boundary
 - **`@Transactional` boundary visualization**: show where transactional boundaries actually start and end once self-invocation and AOP proxying are accounted for
 
