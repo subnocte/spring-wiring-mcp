@@ -78,10 +78,10 @@ class EndpointResolverToolsTest {
         assertThat(status.beanCount()).isGreaterThanOrEqualTo(18);
         assertThat(status.unresolvedInjectionsByReason())
                 .containsExactlyInAnyOrderEntriesOf(java.util.Map.of(
-                        BeanEdge.REASON_COLLECTION_INJECTION, 1L,
                         BeanEdge.REASON_MULTIPLE_CANDIDATES, 1L,
                         BeanEdge.REASON_CONDITIONAL_CANDIDATES, 1L,
-                        BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, 1L));
+                        BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, 2L,
+                        BeanEdge.REASON_COLLECTION_INJECTION, 1L));
         assertThat(status.parseFailureCount()).isEqualTo(1);
         assertThat(status.parseFailures().get(0).filePath()).endsWith("Unparseable.java");
     }

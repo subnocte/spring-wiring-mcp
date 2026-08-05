@@ -175,8 +175,12 @@ class BeanIndexTest {
         assertThat(gateway.target().fqcn()).isEqualTo(PKG + "MockGateway");
 
         BeanEdge formats = edge(deps, "formats");
-        assertThat(formats.status()).isEqualTo(BeanEdge.STATUS_UNRESOLVED);
-        assertThat(formats.reason()).isEqualTo(BeanEdge.REASON_COLLECTION_INJECTION);
+        assertThat(formats.status()).isEqualTo(BeanEdge.STATUS_RESOLVED);
+        assertThat(formats.kind()).isEqualTo("collection" /* BeanEdge.KIND_COLLECTION: not yet defined in src/main */);
+        assertThat(formats.target()).isNull();
+        assertThat(formats.candidates())
+                .extracting(BeanDefinition::fqcn)
+                .containsExactlyInAnyOrder(PKG + "CsvExportFormat", PKG + "JsonExportFormat");
 
         BeanEdge objectMapper = edge(deps, "objectMapper");
         assertThat(objectMapper.status()).isEqualTo(BeanEdge.STATUS_NOT_A_SCANNED_BEAN);
@@ -236,10 +240,10 @@ class BeanIndexTest {
     void unresolvedInjectionCountByReasonAggregatesAcrossAllBeans() {
         assertThat(index.unresolvedInjectionCountByReason()).containsExactlyInAnyOrderEntriesOf(
                 java.util.Map.of(
-                        BeanEdge.REASON_COLLECTION_INJECTION, 1L,
                         BeanEdge.REASON_MULTIPLE_CANDIDATES, 1L,
                         BeanEdge.REASON_CONDITIONAL_CANDIDATES, 1L,
-                        BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, 1L));
+                        BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, 2L,
+                        BeanEdge.REASON_COLLECTION_INJECTION, 1L));
     }
 
     @Test
@@ -273,12 +277,17 @@ class BeanIndexTest {
 
     @Test
     void dependentsOfInterfaceDeclaredTypeFindsDeclaringBean() {
+        // NotificationService (field @Autowired) and SetterService (setter @Autowired, backed
+        // by a plain field the index picks up regardless of the annotation's location) both
+        // declare a dependency on GreetingService.
         List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "GreetingService");
 
-        assertThat(dependents).hasSize(1);
-        BeanIndex.Dependent dependent = dependents.get(0);
-        assertThat(dependent.bean().fqcn()).isEqualTo(PKG + "NotificationService");
-        assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_DECLARED_TYPE);
+        assertThat(dependents).hasSize(2);
+        assertThat(dependents)
+                .extracting(d -> d.bean().fqcn())
+                .containsExactlyInAnyOrder(PKG + "NotificationService", PKG + "SetterService");
+        assertThat(dependents).allSatisfy(dependent ->
+                assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_DECLARED_TYPE));
     }
 
     @Test
@@ -294,13 +303,21 @@ class BeanIndexTest {
 
     @Test
     void dependentsOfUnresolvedCandidateIncludesCandidateSite() {
+        // ReportService#exportFormat is genuinely unresolved (multiple candidates). The three
+        // others are resolved collection edges whose candidates list every implementation,
+        // including Csv - so they show up here too, via candidate rather than via target.
         List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "CsvExportFormat");
 
-        assertThat(dependents).hasSize(1);
-        BeanIndex.Dependent dependent = dependents.get(0);
-        assertThat(dependent.bean().fqcn()).isEqualTo(PKG + "ReportService");
-        assertThat(dependent.edge().fieldName()).isEqualTo("exportFormat");
-        assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_CANDIDATE);
+        assertThat(dependents).hasSize(4);
+        assertThat(dependents).allSatisfy(dependent ->
+                assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_CANDIDATE));
+        assertThat(dependents)
+                .extracting(d -> d.bean().simpleName() + "#" + d.edge().fieldName())
+                .containsExactlyInAnyOrder(
+                        "ReportService#exportFormat",
+                        "CheckoutService#formats",
+                        "MixedCollectionService#formatSet",
+                        "MixedCollectionService#formatsByName");
     }
 
     @Test
@@ -325,5 +342,77 @@ class BeanIndexTest {
     @Test
     void dependentsOfBeanWithNoDependentsIsEmpty() {
         assertThat(index.dependentsOf(PKG + "ReportService")).isEmpty();
+    }
+
+    @Test
+    void collectionEdgesResolveToAllImplementations() {
+        BeanDependencies deps = depsOf(PKG + "MixedCollectionService");
+
+        BeanEdge formatSet = edge(deps, "formatSet");
+        assertThat(formatSet.status()).isEqualTo(BeanEdge.STATUS_RESOLVED);
+        assertThat(formatSet.kind()).isEqualTo("collection" /* BeanEdge.KIND_COLLECTION: not yet defined in src/main */);
+        assertThat(formatSet.target()).isNull();
+        assertThat(formatSet.candidates())
+                .extracting(BeanDefinition::fqcn)
+                .containsExactlyInAnyOrder(PKG + "CsvExportFormat", PKG + "JsonExportFormat");
+
+        BeanEdge formatsByName = edge(deps, "formatsByName");
+        assertThat(formatsByName.status()).isEqualTo(BeanEdge.STATUS_RESOLVED);
+        assertThat(formatsByName.kind()).isEqualTo("collection" /* BeanEdge.KIND_COLLECTION: not yet defined in src/main */);
+        assertThat(formatsByName.target()).isNull();
+        assertThat(formatsByName.candidates())
+                .extracting(BeanDefinition::fqcn)
+                .containsExactlyInAnyOrder(PKG + "CsvExportFormat", PKG + "JsonExportFormat");
+
+        // Map<Long, ExportFormat>: key is not String, so it stays out of scope - reported as
+        // collection injection rather than guessed at.
+        BeanEdge formatsById = edge(deps, "formatsById");
+        assertThat(formatsById.status()).isEqualTo(BeanEdge.STATUS_UNRESOLVED);
+        assertThat(formatsById.reason()).isEqualTo(BeanEdge.REASON_COLLECTION_INJECTION);
+
+        // List<SignatureVerifier>: the element interface itself has zero implementations, so
+        // the failure reason is the same one a single-valued injection of it would get.
+        BeanEdge verifiers = edge(deps, "verifiers");
+        assertThat(verifiers.status()).isEqualTo(BeanEdge.STATUS_UNRESOLVED);
+        assertThat(verifiers.reason()).isEqualTo(BeanEdge.REASON_NO_IMPLEMENTATION_FOUND);
+    }
+
+    @Test
+    void beanMethodParametersBecomeEdgesOfTheProducedBean() {
+        BeanDependencies deps = depsOf(PKG + "RateLimiter");
+
+        assertThat(deps.edges()).hasSize(1);
+        BeanEdge auditMapper = edge(deps, "auditMapper");
+        assertThat(auditMapper.status()).isEqualTo(BeanEdge.STATUS_RESOLVED);
+        assertThat(auditMapper.kind()).isEqualTo(BeanEdge.KIND_TERMINAL);
+        assertThat(auditMapper.target().fqcn()).isEqualTo(PKG + "AuditMapper");
+    }
+
+    @Test
+    void customStereotypesMakeBeansTransitively() {
+        assertThat(beanNamed(PKG + "GreetUseCase").stereotype()).isEqualTo("UseCase");
+        assertThat(beanNamed(PKG + "BillingDomainService").stereotype()).isEqualTo("DomainService");
+
+        BeanDependencies deps = depsOf(PKG + "GreetUseCase");
+        BeanEdge greetingService = edge(deps, "greetingService");
+        assertThat(greetingService.status()).isEqualTo(BeanEdge.STATUS_RESOLVED);
+        assertThat(greetingService.kind()).isEqualTo(BeanEdge.KIND_SINGLE_IMPLEMENTATION);
+        assertThat(greetingService.target().fqcn()).isEqualTo(PKG + "DefaultGreetingService");
+
+        // The annotation declarations themselves are not beans - only classes annotated with them are.
+        assertThat(index.allBeans())
+                .extracting(BeanDefinition::fqcn)
+                .doesNotContain(PKG + "UseCase", PKG + "DomainService");
+    }
+
+    @Test
+    void setterInjectionIsCoveredByTheBackingField() {
+        BeanDependencies deps = depsOf(PKG + "SetterService");
+
+        assertThat(deps.edges()).hasSize(1);
+        BeanEdge greetingService = edge(deps, "greetingService");
+        assertThat(greetingService.status()).isEqualTo(BeanEdge.STATUS_RESOLVED);
+        assertThat(greetingService.kind()).isEqualTo(BeanEdge.KIND_SINGLE_IMPLEMENTATION);
+        assertThat(greetingService.target().fqcn()).isEqualTo(PKG + "DefaultGreetingService");
     }
 }

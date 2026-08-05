@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Configuration;
 public class AppConfig {
 
     @Bean
-    public RateLimiter rateLimiter() {
+    public RateLimiter rateLimiter(AuditMapper auditMapper) {
         return new RateLimiter();
     }
 }
