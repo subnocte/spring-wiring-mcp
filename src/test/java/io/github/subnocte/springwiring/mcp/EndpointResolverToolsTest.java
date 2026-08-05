@@ -1,5 +1,7 @@
 package io.github.subnocte.springwiring.mcp;
 
+import io.github.subnocte.springwiring.bean.BeanEdge;
+import io.github.subnocte.springwiring.bean.BeanIndex;
 import io.github.subnocte.springwiring.endpoint.EndpointIndex;
 import io.github.subnocte.springwiring.endpoint.UnresolvedMapping;
 import org.junit.jupiter.api.BeforeAll;
@@ -18,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EndpointResolverToolsTest {
 
     private static EndpointIndex index;
+    private static BeanIndex beanIndex;
     private static EndpointResolverTools tools;
 
     @BeforeAll
@@ -25,7 +28,8 @@ class EndpointResolverToolsTest {
         Path root = Path.of(Objects.requireNonNull(
                 EndpointResolverToolsTest.class.getResource("/sample-project")).toURI());
         index = EndpointIndex.forRoot(root);
-        tools = new EndpointResolverTools(index);
+        beanIndex = BeanIndex.forRoot(root);
+        tools = new EndpointResolverTools(index, beanIndex);
     }
 
     @Test
@@ -70,5 +74,12 @@ class EndpointResolverToolsTest {
                 .containsEntry(UnresolvedMapping.REASON_INTERFACE_MAPPINGS_NOT_FOUND, 1L)
                 .containsEntry(UnresolvedMapping.REASON_CONSTANT_REFERENCE, 1L);
         assertThat(status.unresolvedMappings()).hasSize(4);
+        assertThat(status.beanCount()).isGreaterThanOrEqualTo(18);
+        assertThat(status.unresolvedInjectionsByReason())
+                .containsExactlyInAnyOrderEntriesOf(java.util.Map.of(
+                        BeanEdge.REASON_COLLECTION_INJECTION, 1L,
+                        BeanEdge.REASON_MULTIPLE_CANDIDATES, 1L,
+                        BeanEdge.REASON_CONDITIONAL_CANDIDATES, 1L,
+                        BeanEdge.REASON_NO_IMPLEMENTATION_FOUND, 1L));
     }
 }

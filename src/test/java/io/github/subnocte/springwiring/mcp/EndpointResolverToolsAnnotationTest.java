@@ -1,5 +1,6 @@
 package io.github.subnocte.springwiring.mcp;
 
+import io.github.subnocte.springwiring.bean.BeanIndex;
 import io.github.subnocte.springwiring.endpoint.EndpointIndex;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -25,7 +26,7 @@ class EndpointResolverToolsAnnotationTest {
     void resolveEndpointToolDeclaresReadOnlySemantics() throws URISyntaxException {
         Path root = Path.of(Objects.requireNonNull(
                 getClass().getResource("/sample-project")).toURI());
-        EndpointResolverTools tools = new EndpointResolverTools(EndpointIndex.forRoot(root));
+        EndpointResolverTools tools = new EndpointResolverTools(EndpointIndex.forRoot(root), BeanIndex.forRoot(root));
 
         List<SyncToolSpecification> specs = new SyncMcpToolProvider(List.of(tools)).getToolSpecifications();
 

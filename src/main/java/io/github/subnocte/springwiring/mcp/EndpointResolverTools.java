@@ -1,5 +1,6 @@
 package io.github.subnocte.springwiring.mcp;
 
+import io.github.subnocte.springwiring.bean.BeanIndex;
 import io.github.subnocte.springwiring.endpoint.EndpointHandler;
 import io.github.subnocte.springwiring.endpoint.EndpointIndex;
 import io.github.subnocte.springwiring.endpoint.UnresolvedMapping;
@@ -21,9 +22,11 @@ public class EndpointResolverTools {
     private static final int SUGGESTION_LIMIT = 5;
 
     private final EndpointIndex endpointIndex;
+    private final BeanIndex beanIndex;
 
-    public EndpointResolverTools(EndpointIndex endpointIndex) {
+    public EndpointResolverTools(EndpointIndex endpointIndex, BeanIndex beanIndex) {
         this.endpointIndex = endpointIndex;
+        this.beanIndex = beanIndex;
     }
 
     @McpTool(
@@ -64,11 +67,11 @@ public class EndpointResolverTools {
 
     @McpTool(
             name = "indexStatus",
-            description = "Reports the endpoint index's coverage of the target codebase: how many endpoints "
-                    + "are indexed, how many source files were scanned, and which mappings could not be "
-                    + "resolved statically (with file, line, and reason: constant-reference, "
-                    + "non-literal-expression, or unsupported-pattern). Call this first to judge how much "
-                    + "to trust resolveEndpoint results for this project.",
+            description = "Reports the index's coverage of the target codebase: how many endpoints and beans "
+                    + "are indexed, how many source files were scanned, which mappings could not be "
+                    + "resolved statically (with file, line, and reason), and how many bean injection "
+                    + "sites are unresolved by reason. Call this first to judge how much to trust "
+                    + "resolveEndpoint and beanDependencies results for this project.",
             annotations = @McpTool.McpAnnotations(
                     title = "Endpoint index coverage status",
                     readOnlyHint = true,
@@ -86,7 +89,9 @@ public class EndpointResolverTools {
                 endpointIndex.scannedFileCount(),
                 unresolved.size(),
                 byReason,
-                unresolved);
+                unresolved,
+                beanIndex.allBeans().size(),
+                beanIndex.unresolvedInjectionCountByReason());
     }
 
     /**
@@ -120,7 +125,9 @@ public class EndpointResolverTools {
             int scannedFileCount,
             int unresolvedCount,
             Map<String, Long> unresolvedByReason,
-            List<UnresolvedMapping> unresolvedMappings
+            List<UnresolvedMapping> unresolvedMappings,
+            int beanCount,
+            Map<String, Long> unresolvedInjectionsByReason
     ) {
     }
 }
