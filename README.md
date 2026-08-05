@@ -37,15 +37,30 @@ and get back every dependency resolved to the bean that wins at injection time, 
 
 Resolution follows Spring's semantics:
 - a concrete bean class resolves to itself; an interface resolves to its single scanned implementation, the `@Primary` one, or the one a field `@Qualifier` names (qualifier beats primary)
+- collection sites (`List<X>` / `Set<X>` / `Collection<X>` / `Map<String, X>`) resolve to every bound element implementation, the way Spring injects them
 - MyBatis `@Mapper` interfaces and Spring Data repositories are *terminal beans* — including repositories built on a project-local base interface, followed transitively through the extends chain
-- `@Bean` factory-method return types join the bean universe (their own parameter wiring is not analyzed yet)
-- sites that cannot be decided statically are reported with a reason and the candidate list, never guessed: multiple candidates without a disambiguator, candidates behind `@Profile`/`@ConditionalOn...` (the winner is environment-dependent), collection injection (`List<X>`/`Map<K, X>`), and interfaces with no scanned implementation
+- `@Bean` factory-method return types join the bean universe, with the factory method's parameters as their dependency edges; annotations meta-annotated with a stereotype (custom stereotypes, transitively) make their classes beans; setter injection is covered by the field model (the setter stores into the field the index already sees)
+- sites that cannot be decided statically are reported with a reason and the candidate list, never guessed: multiple candidates without a disambiguator, candidates behind `@Profile`/`@ConditionalOn...` (the winner is environment-dependent), interfaces with no scanned implementation, and maps with non-String keys
 
 `beanDependents` is the reverse direction — impact analysis before changing a bean or its contract:
 
 > "Who depends on `TAdGroupRepository`?"
 
 returns every bean whose dependency sites reference the queried class or interface, each tagged with how: resolved to it (`target`), declared as the field's type (`declared-type`), or listed among an unresolved site's candidates (`candidate` — a *possible* dependent, surfaced rather than hidden).
+
+## Tracing and transactions (Milestone 3: `traceEndpoint` / `transactionalBoundaries`)
+
+`traceEndpoint` connects the two graphs:
+
+> "From `GET /ad/group/list`, what does the request touch, down to the database?"
+
+resolves the handler, then walks resolved bean edges breadth-first from its controller to the persistence boundary — every hop with field and depth, terminal repositories/mappers collected, and unresolved sites listed as *blocked* so an incomplete trace is visible as such. Bean-level by design: it reports which beans are reachable from the handler's controller, not which methods call which.
+
+`transactionalBoundaries` answers the question `@Transactional` annotations alone cannot:
+
+> "Which of this class's methods actually run in a transaction?"
+
+Per method: the effective status on the proxy path (own annotation, class-level annotation — which covers non-private methods only — or none). Plus the two classic silent failures: same-class calls to `@Transactional` methods, where the proxy is bypassed and the callee's annotation does not apply, and `@Transactional` on private methods, which the proxy can never intercept.
 
 ### Never silently wrong
 
@@ -109,9 +124,11 @@ The server communicates over stdio, so it's launched as a subprocess by the MCP 
 
 ## Roadmap
 
-- **Bean graph completion**: collection injection (`List<X>` → all implementations), `@Bean` method parameter wiring, meta-annotations / custom stereotypes, setter injection
-- **Endpoint → Repository tracing**: follow a handler method down through service and repository layers to the persistence boundary
-- **`@Transactional` boundary visualization**: show where transactional boundaries actually start and end once self-invocation and AOP proxying are accounted for
+- **Method-level tracing**: `traceEndpoint` is bean-level; following actual call chains (which service method a handler invokes) needs call-graph analysis
+- **Trace shaping**: depth/direction filters for `traceEndpoint` on hub-heavy codebases (a single endpoint can legitimately reach 50+ terminals)
+- **Transactional attributes**: surface `propagation`/`readOnly` values, and `@Transactional` semantics on interface-declared methods
+- **Provider-style injection**: `ObjectProvider<X>` / `Optional<X>` sites
+- **Distribution**: publish via jbang; evaluate a GraalVM native image once the Spring AI MCP starter's native support is verified
 
 ## Demo
 
