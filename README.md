@@ -50,7 +50,7 @@ This produces `build/libs/spring-wiring-mcp.jar`.
 
 ## Connecting to Claude Code / Claude Desktop
 
-The server communicates over stdio, so it's launched as a subprocess by the MCP client rather than run as a standalone service. Point `CODE_ROOT` at the Spring Boot codebase you want indexed.
+The server communicates over stdio, so it's launched as a subprocess by the MCP client rather than run as a standalone service. Point `CODE_ROOT` at the Spring Boot codebase you want indexed — a repository root is fine, monorepo included: the scanner prunes hidden directories (`.git`, `.gradle`, …), build output and dependency trees (`build/`, `target/`, `out/`, `bin/`, `node_modules/`), and test source sets (`src/test`, `src/integrationTest`, `src/testFixtures`), so only production sources are indexed.
 
 ### Claude Code (`.mcp.json` or `claude mcp add`)
 
