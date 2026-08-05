@@ -640,18 +640,22 @@ public final class BeanIndex {
                               List<BlockedSite> blocked, boolean truncated) {
     }
 
-    /** Traverses resolved dependency edges breadth-first, at most {@code maxDepth} hops deep. */
-    public TraceResult reachableFrom(String fqcn, int maxDepth) {
-        return reachableFrom(fqcn);
-    }
-
     /** Traverses resolved dependency edges breadth-first from the bean with this FQCN. */
     public TraceResult reachableFrom(String fqcn) {
+        return reachableFrom(fqcn, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Traverses resolved dependency edges breadth-first, at most {@code maxDepth} hops deep.
+     * A traversal the limit cut off is flagged {@code truncated} so it never looks complete.
+     */
+    public TraceResult reachableFrom(String fqcn, int maxDepth) {
         List<TraceStep> steps = new ArrayList<>();
         List<BeanDefinition> terminals = new ArrayList<>();
         List<BlockedSite> blocked = new ArrayList<>();
         Set<String> visited = new java.util.HashSet<>();
         java.util.ArrayDeque<Map.Entry<String, Integer>> queue = new java.util.ArrayDeque<>();
+        boolean truncated = false;
 
         if (!beansByFqcn.containsKey(fqcn)) {
             return new TraceResult(List.of(), List.of(), List.of(), false);
@@ -663,6 +667,14 @@ public final class BeanIndex {
             Map.Entry<String, Integer> current = queue.poll();
             BeanDependencies deps = dependenciesByFqcn.get(current.getKey());
             if (deps == null) {
+                continue;
+            }
+            if (current.getValue() >= maxDepth) {
+                // this bean's edges are beyond the limit; if any were resolved, the
+                // caller is looking at an incomplete picture and must know
+                if (deps.edges().stream().anyMatch(e -> BeanEdge.STATUS_RESOLVED.equals(e.status()))) {
+                    truncated = true;
+                }
                 continue;
             }
             int depth = current.getValue() + 1;
@@ -691,7 +703,7 @@ public final class BeanIndex {
                 }
             }
         }
-        return new TraceResult(List.copyOf(steps), List.copyOf(terminals), List.copyOf(blocked), false);
+        return new TraceResult(List.copyOf(steps), List.copyOf(terminals), List.copyOf(blocked), truncated);
     }
 
     /** Count of unresolved dependency sites across all beans, grouped by reason. */
