@@ -436,6 +436,39 @@ public final class BeanIndex {
         return Optional.ofNullable(dependenciesByFqcn.get(fqcn));
     }
 
+    /**
+     * One bean depending (certainly or possibly) on a queried type.
+     *
+     * @param bean the depending bean
+     * @param edge its dependency site that references the queried type
+     * @param via  how the reference was made: {@link #VIA_TARGET} (resolved to it),
+     *             {@link #VIA_DECLARED_TYPE} (field is declared as it), or
+     *             {@link #VIA_CANDIDATE} (it is one of an unresolved site's candidates —
+     *             a possible dependent, reported rather than hidden)
+     */
+    public record Dependent(BeanDefinition bean, BeanEdge edge, String via) {
+        public static final String VIA_TARGET = "target";
+        public static final String VIA_DECLARED_TYPE = "declared-type";
+        public static final String VIA_CANDIDATE = "candidate";
+    }
+
+    /**
+     * FQCNs matching {@code className} among beans and declared dependency types (so
+     * interfaces like a service's contract are queryable even when they are not beans):
+     * an exact FQCN match wins alone; otherwise all simple-name matches.
+     */
+    public List<String> findTypeByName(String className) {
+        return List.of();
+    }
+
+    /**
+     * Beans whose dependency edges reference this exact FQCN, in order: resolved to it,
+     * declared as it, then unresolved sites listing it as a candidate.
+     */
+    public List<Dependent> dependentsOf(String fqcn) {
+        return List.of();
+    }
+
     /** Count of unresolved dependency sites across all beans, grouped by reason. */
     public Map<String, Long> unresolvedInjectionCountByReason() {
         return dependenciesByFqcn.values().stream()

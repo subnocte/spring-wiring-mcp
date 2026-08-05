@@ -65,6 +65,56 @@ public class BeanGraphTools {
                         "Bean '" + matches.get(0).fqcn() + "' has no analyzed dependencies."));
     }
 
+    @McpTool(
+            name = "beanDependents",
+            description = "Reverse lookup: lists the Spring beans that depend on a given class or "
+                    + "interface, with the injecting field and line. Reports certain dependents "
+                    + "(sites resolved to it or declared as it) and possible dependents (unresolved "
+                    + "sites listing it as a candidate) — possible ones are included rather than "
+                    + "hidden, marked via=candidate. Useful for impact analysis before changing a "
+                    + "bean or its contract.",
+            // Pure lookup against an in-memory index built from local sources: safe to
+            // call freely, safe to retry, and touches nothing outside the indexed codebase.
+            annotations = @McpTool.McpAnnotations(
+                    title = "Find dependents of a Spring bean",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false
+            )
+    )
+    public BeanDependentsResult beanDependents(
+            @McpToolParam(description = "Bean class or interface: fully qualified name, or a simple "
+                    + "name if unique", required = true)
+            String className
+    ) {
+        List<String> matches = beanIndex.findTypeByName(className);
+        if (matches.isEmpty()) {
+            return new BeanDependentsResult(false, null, List.of(), List.of(),
+                    "No scanned type named '" + className + "' is referenced by any bean. It may be "
+                            + "a library type, unused, or outside CODE_ROOT.");
+        }
+        if (matches.size() > 1) {
+            return new BeanDependentsResult(false, null, List.of(), matches,
+                    "Simple name matches " + matches.size() + " types; retry with a fully qualified name.");
+        }
+        return new BeanDependentsResult(true, matches.get(0),
+                beanIndex.dependentsOf(matches.get(0)), List.of(), null);
+    }
+
+    /**
+     * Result payload of {@link #beanDependents}. On an ambiguous simple name,
+     * {@code matches} lists the FQCNs to retry with.
+     */
+    public record BeanDependentsResult(
+            boolean found,
+            String targetFqcn,
+            List<BeanIndex.Dependent> dependents,
+            List<String> matches,
+            String error
+    ) {
+    }
+
     /**
      * Result payload of {@link #beanDependencies}. On an ambiguous simple name,
      * {@code matches} lists the FQCNs to retry with.

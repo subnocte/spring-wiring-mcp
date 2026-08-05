@@ -62,4 +62,38 @@ class BeanGraphToolsTest {
         assertThat(result.found()).isFalse();
         assertThat(result.error()).contains("No scanned bean");
     }
+
+    @Test
+    void beanDependentsResolvesBySimpleNameToResolvedTargetEdge() {
+        var result = tools.beanDependents("NotificationService");
+
+        assertThat(result.found()).isTrue();
+        assertThat(result.targetFqcn()).isEqualTo(PKG + "NotificationService");
+        assertThat(result.dependents()).hasSize(1);
+        assertThat(result.dependents().get(0).bean().fqcn()).isEqualTo(PKG + "NotificationController");
+    }
+
+    @Test
+    void beanDependentsFindsMultipleDeclaredTypeSites() {
+        var result = tools.beanDependents("PaymentGateway");
+
+        assertThat(result.found()).isTrue();
+        assertThat(result.dependents()).hasSize(2);
+    }
+
+    @Test
+    void beanDependentsAmbiguousSimpleNameIsReportedNotGuessed() {
+        var result = tools.beanDependents("Formatter");
+
+        assertThat(result.found()).isFalse();
+        assertThat(result.matches()).hasSize(2);
+    }
+
+    @Test
+    void beanDependentsUnknownTypeNameIsReportedNotSilentlyEmpty() {
+        var result = tools.beanDependents("NoSuchType");
+
+        assertThat(result.found()).isFalse();
+        assertThat(result.error()).contains("No scanned type");
+    }
 }

@@ -248,4 +248,82 @@ class BeanIndexTest {
         assertThat(service.filePath()).endsWith("NotificationService.java");
         assertThat(service.lineNumber()).isGreaterThan(0);
     }
+
+    @Test
+    void dependentsOfConcreteTargetFindsResolvedControllerEdge() {
+        List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "NotificationService");
+
+        assertThat(dependents).hasSize(1);
+        BeanIndex.Dependent dependent = dependents.get(0);
+        assertThat(dependent.bean().fqcn()).isEqualTo(PKG + "NotificationController");
+        assertThat(dependent.edge().fieldName()).isEqualTo("notificationService");
+        assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_TARGET);
+    }
+
+    @Test
+    void dependentsOfSingleImplementationTargetIncludesResolvingBean() {
+        List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "DefaultGreetingService");
+
+        assertThat(dependents).anySatisfy(dependent -> {
+            assertThat(dependent.bean().fqcn()).isEqualTo(PKG + "NotificationService");
+            assertThat(dependent.edge().fieldName()).isEqualTo("greetingService");
+            assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_TARGET);
+        });
+    }
+
+    @Test
+    void dependentsOfInterfaceDeclaredTypeFindsDeclaringBean() {
+        List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "GreetingService");
+
+        assertThat(dependents).hasSize(1);
+        BeanIndex.Dependent dependent = dependents.get(0);
+        assertThat(dependent.bean().fqcn()).isEqualTo(PKG + "NotificationService");
+        assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_DECLARED_TYPE);
+    }
+
+    @Test
+    void dependentsOfPaymentGatewayFindsBothDeclaredTypeSites() {
+        List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "PaymentGateway");
+
+        assertThat(dependents).hasSize(2);
+        assertThat(dependents).extracting(d -> d.bean().fqcn())
+                .containsExactlyInAnyOrder(PKG + "DefaultGreetingService", PKG + "CheckoutService");
+        assertThat(dependents).allSatisfy(dependent ->
+                assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_DECLARED_TYPE));
+    }
+
+    @Test
+    void dependentsOfUnresolvedCandidateIncludesCandidateSite() {
+        List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "CsvExportFormat");
+
+        assertThat(dependents).hasSize(1);
+        BeanIndex.Dependent dependent = dependents.get(0);
+        assertThat(dependent.bean().fqcn()).isEqualTo(PKG + "ReportService");
+        assertThat(dependent.edge().fieldName()).isEqualTo("exportFormat");
+        assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_CANDIDATE);
+    }
+
+    @Test
+    void dependentsOfTerminalMapperTargetFindsResolvedEdge() {
+        List<BeanIndex.Dependent> dependents = index.dependentsOf(PKG + "AuditMapper");
+
+        assertThat(dependents).hasSize(1);
+        BeanIndex.Dependent dependent = dependents.get(0);
+        assertThat(dependent.bean().fqcn()).isEqualTo(PKG + "NotificationService");
+        assertThat(dependent.via()).isEqualTo(BeanIndex.Dependent.VIA_TARGET);
+    }
+
+    @Test
+    void findTypeByNameMatchesInterfacesFqcnAndAmbiguityAndAbsence() {
+        assertThat(index.findTypeByName("GreetingService")).containsExactly(PKG + "GreetingService");
+        assertThat(index.findTypeByName(PKG + "GreetingService")).containsExactly(PKG + "GreetingService");
+        assertThat(index.findTypeByName("Formatter")).hasSize(2);
+        assertThat(index.findTypeByName("NotificationService")).containsExactly(PKG + "NotificationService");
+        assertThat(index.findTypeByName("NoSuchType")).isEmpty();
+    }
+
+    @Test
+    void dependentsOfBeanWithNoDependentsIsEmpty() {
+        assertThat(index.dependentsOf(PKG + "ReportService")).isEmpty();
+    }
 }
