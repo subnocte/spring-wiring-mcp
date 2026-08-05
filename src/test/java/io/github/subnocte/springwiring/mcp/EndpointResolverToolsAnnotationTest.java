@@ -30,9 +30,9 @@ class EndpointResolverToolsAnnotationTest {
 
         List<SyncToolSpecification> specs = new SyncMcpToolProvider(List.of(tools)).getToolSpecifications();
 
-        assertThat(specs).hasSize(2);
+        assertThat(specs).hasSize(3);
         assertThat(specs).extracting(s -> s.tool().name())
-                .containsExactlyInAnyOrder("resolveEndpoint", "indexStatus");
+                .containsExactlyInAnyOrder("resolveEndpoint", "indexStatus", "traceEndpoint");
         for (SyncToolSpecification spec : specs) {
             McpSchema.Tool tool = spec.tool();
             McpSchema.ToolAnnotations annotations = tool.annotations();

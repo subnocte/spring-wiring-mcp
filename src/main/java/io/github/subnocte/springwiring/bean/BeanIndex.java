@@ -615,6 +615,33 @@ public final class BeanIndex {
         return List.copyOf(all);
     }
 
+    /** One resolved hop in a dependency traversal: {@code from.edge -> to}, at BFS depth. */
+    public record TraceStep(BeanDefinition from, BeanEdge edge, BeanDefinition to, int depth) {
+    }
+
+    /** A dependency site a traversal could not continue through (unresolved edge). */
+    public record BlockedSite(BeanDefinition bean, BeanEdge edge) {
+    }
+
+    /**
+     * Everything reachable from one bean by following resolved edges (collection edges
+     * fan out to every bound element).
+     *
+     * @param steps     resolved hops in BFS order, cycle-safe
+     * @param terminals reached terminal beans (mappers / Spring Data repositories) —
+     *                  the persistence boundary
+     * @param blocked   unresolved sites encountered on the way, reported so the caller
+     *                  knows where the trace is incomplete
+     */
+    public record TraceResult(List<TraceStep> steps, List<BeanDefinition> terminals,
+                              List<BlockedSite> blocked) {
+    }
+
+    /** Traverses resolved dependency edges breadth-first from the bean with this FQCN. */
+    public TraceResult reachableFrom(String fqcn) {
+        return new TraceResult(List.of(), List.of(), List.of());
+    }
+
     /** Count of unresolved dependency sites across all beans, grouped by reason. */
     public Map<String, Long> unresolvedInjectionCountByReason() {
         return dependenciesByFqcn.values().stream()

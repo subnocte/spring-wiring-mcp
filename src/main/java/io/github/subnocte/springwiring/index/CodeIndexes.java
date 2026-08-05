@@ -3,6 +3,7 @@ package io.github.subnocte.springwiring.index;
 import io.github.subnocte.springwiring.bean.BeanIndex;
 import io.github.subnocte.springwiring.endpoint.EndpointIndex;
 import io.github.subnocte.springwiring.scanner.SourceScanner;
+import io.github.subnocte.springwiring.tx.TransactionalIndex;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -22,8 +23,9 @@ import java.util.Map;
  */
 public final class CodeIndexes {
 
-    /** The two indexes built from one consistent view of the sources. */
-    public record Snapshot(EndpointIndex endpointIndex, BeanIndex beanIndex) {
+    /** The indexes built from one consistent view of the sources. */
+    public record Snapshot(EndpointIndex endpointIndex, BeanIndex beanIndex,
+                           TransactionalIndex transactionalIndex) {
     }
 
     /** What "unchanged" means per file: same size and same modification time. */
@@ -70,7 +72,8 @@ public final class CodeIndexes {
     }
 
     private static Snapshot build(List<Path> files) {
-        return new Snapshot(EndpointIndex.build(files), BeanIndex.build(files));
+        return new Snapshot(EndpointIndex.build(files), BeanIndex.build(files),
+                TransactionalIndex.build(files));
     }
 
     private static Map<Path, FileStamp> fingerprintOf(List<Path> files) {

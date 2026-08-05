@@ -85,4 +85,24 @@ class EndpointResolverToolsTest {
         assertThat(status.parseFailureCount()).isEqualTo(1);
         assertThat(status.parseFailures().get(0).filePath()).endsWith("Unparseable.java");
     }
+
+    @Test
+    void traceEndpointWalksToTerminals() {
+        var trace = tools.traceEndpoint("GET", "/notifications");
+
+        assertThat(trace.found()).isTrue();
+        assertThat(trace.handler().fqcn()).isEqualTo("com.example.sample.beans.NotificationController");
+        assertThat(trace.steps()).isNotEmpty();
+        assertThat(trace.terminals())
+                .extracting(io.github.subnocte.springwiring.bean.BeanDefinition::fqcn)
+                .contains("com.example.sample.beans.AuditMapper");
+    }
+
+    @Test
+    void traceEndpointMissIsReported() {
+        var trace = tools.traceEndpoint("GET", "/nope");
+
+        assertThat(trace.found()).isFalse();
+        assertThat(trace.error()).contains("resolveEndpoint");
+    }
 }

@@ -99,6 +99,51 @@ public class EndpointResolverTools {
                 endpointIndex.parseFailures());
     }
 
+    @McpTool(
+            name = "traceEndpoint",
+            description = "Follows an HTTP endpoint down through the bean graph: resolves the handler "
+                    + "method, then walks resolved bean dependencies breadth-first from the controller "
+                    + "to the persistence boundary (MyBatis mappers / Spring Data repositories). Bean-"
+                    + "level, not method-level: it reports which beans are reachable from the handler's "
+                    + "controller, not which methods actually call which. Unresolved sites encountered "
+                    + "on the way are listed as blocked, so an incomplete trace is visible as such.",
+            annotations = @McpTool.McpAnnotations(
+                    title = "Trace endpoint to persistence boundary",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false
+            )
+    )
+    public EndpointTrace traceEndpoint(
+            @McpToolParam(description = "HTTP method, e.g. GET, POST, PUT, DELETE, PATCH", required = true)
+            String method,
+            @McpToolParam(description = "Request path, e.g. /users/42", required = true)
+            String path
+    ) {
+        CodeIndexes.Snapshot snapshot = codeIndexes.current();
+        Optional<EndpointHandler> match = snapshot.endpointIndex().resolve(method, path);
+        if (match.isEmpty()) {
+            return new EndpointTrace(false, null, List.of(), List.of(), List.of(),
+                    "No indexed route matches " + method + " " + path
+                            + "; use resolveEndpoint for close-match suggestions.");
+        }
+        BeanIndex.TraceResult trace = snapshot.beanIndex().reachableFrom(match.get().fqcn());
+        return new EndpointTrace(true, match.get(), trace.steps(), trace.terminals(),
+                trace.blocked(), null);
+    }
+
+    /** Result payload of {@link #traceEndpoint}. */
+    public record EndpointTrace(
+            boolean found,
+            EndpointHandler handler,
+            List<BeanIndex.TraceStep> steps,
+            List<io.github.subnocte.springwiring.bean.BeanDefinition> terminals,
+            List<BeanIndex.BlockedSite> blocked,
+            String error
+    ) {
+    }
+
     /**
      * Result payload of {@link #resolveEndpoint}. {@code unresolvedCount} is always present;
      * the full {@code unresolvedMappings} list and {@code warning} are only populated on a

@@ -345,7 +345,8 @@ class BeanIndexTest {
 
     @Test
     void dependentsOfBeanWithNoDependentsIsEmpty() {
-        assertThat(index.dependentsOf(PKG + "ReportService")).isEmpty();
+        // controllers are graph roots: nothing injects them
+        assertThat(index.dependentsOf(PKG + "NotificationController")).isEmpty();
     }
 
     @Test
@@ -418,5 +419,66 @@ class BeanIndexTest {
         assertThat(greetingService.status()).isEqualTo(BeanEdge.STATUS_RESOLVED);
         assertThat(greetingService.kind()).isEqualTo(BeanEdge.KIND_SINGLE_IMPLEMENTATION);
         assertThat(greetingService.target().fqcn()).isEqualTo(PKG + "DefaultGreetingService");
+    }
+
+    @Test
+    void traceFromControllerReachesPersistenceBoundary() {
+        BeanIndex.TraceResult trace = index.reachableFrom(PKG + "NotificationController");
+
+        assertThat(trace.steps())
+                .extracting(s -> s.from().fqcn() + "->" + s.to().fqcn())
+                .contains(
+                        PKG + "NotificationController->" + PKG + "NotificationService",
+                        PKG + "NotificationService->" + PKG + "AuditMapper",
+                        PKG + "NotificationService->" + PKG + "DefaultGreetingService",
+                        PKG + "DefaultGreetingService->" + PKG + "StripeGateway");
+
+        assertThat(trace.terminals())
+                .extracting(BeanDefinition::fqcn)
+                .contains(PKG + "AuditMapper");
+
+        BeanIndex.TraceStep controllerToService = trace.steps().stream()
+                .filter(s -> s.from().fqcn().equals(PKG + "NotificationController")
+                        && s.to().fqcn().equals(PKG + "NotificationService"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("missing controller->service step"));
+        assertThat(controllerToService.depth()).isEqualTo(1);
+
+        BeanIndex.TraceStep greetingToGateway = trace.steps().stream()
+                .filter(s -> s.from().fqcn().equals(PKG + "DefaultGreetingService")
+                        && s.to().fqcn().equals(PKG + "StripeGateway"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("missing greetingService->gateway step"));
+        assertThat(greetingToGateway.depth()).isEqualTo(3);
+    }
+
+    @Test
+    void traceIsCycleSafe() {
+        BeanIndex.TraceResult trace = index.reachableFrom(PKG + "CycleAService");
+
+        assertThat(trace.steps())
+                .extracting(s -> s.from().fqcn() + "->" + s.to().fqcn())
+                .containsExactly(
+                        PKG + "CycleAService->" + PKG + "CycleBService",
+                        PKG + "CycleBService->" + PKG + "CycleAService");
+        assertThat(trace.steps().get(0).depth()).isEqualTo(1);
+        assertThat(trace.steps().get(1).depth()).isEqualTo(2);
+    }
+
+    @Test
+    void traceReportsBlockedSitesInsteadOfSilentlyStopping() {
+        BeanIndex.TraceResult trace = index.reachableFrom(PKG + "ReportController");
+
+        assertThat(trace.steps())
+                .extracting(s -> s.from().fqcn() + "->" + s.to().fqcn())
+                .contains(PKG + "ReportController->" + PKG + "ReportService");
+
+        assertThat(trace.blocked()).hasSize(3);
+        assertThat(trace.blocked())
+                .extracting(b -> b.bean().fqcn())
+                .containsOnly(PKG + "ReportService");
+        assertThat(trace.blocked())
+                .extracting(b -> b.edge().fieldName())
+                .containsExactlyInAnyOrder("exportFormat", "cacheProvider", "signatureVerifier");
     }
 }
