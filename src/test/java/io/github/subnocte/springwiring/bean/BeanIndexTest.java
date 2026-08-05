@@ -112,6 +112,18 @@ class BeanIndexTest {
     }
 
     @Test
+    void repositoryBasesAreFollowedTransitively() {
+        // BaseAuditRepository extends JpaRepository directly; ExtendedAuditRepository
+        // only through the project-local base - both are framework-implemented
+        BeanDefinition base = beanNamed(PKG + "BaseAuditRepository");
+        assertThat(base.terminal()).isTrue();
+
+        BeanDefinition extended = beanNamed(PKG + "ExtendedAuditRepository");
+        assertThat(extended.terminal()).isTrue();
+        assertThat(extended.stereotype()).isEqualTo("JpaRepository");
+    }
+
+    @Test
     void notificationControllerHasOneResolvedConcreteEdge() {
         BeanDependencies deps = depsOf(PKG + "NotificationController");
 
