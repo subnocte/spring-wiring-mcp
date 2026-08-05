@@ -54,7 +54,7 @@ returns every bean whose dependency sites reference the queried class or interfa
 
 > "From `GET /ad/group/list`, what does the request touch, down to the database?"
 
-resolves the handler, then walks resolved bean edges breadth-first from its controller to the persistence boundary — every hop with field and depth, terminal repositories/mappers collected, and unresolved sites listed as *blocked* so an incomplete trace is visible as such. Bean-level by design: it reports which beans are reachable from the handler's controller, not which methods call which.
+resolves the handler, then walks resolved bean edges breadth-first from its controller to the persistence boundary — every hop with field and depth, terminal repositories/mappers collected, and unresolved sites listed as *blocked* so an incomplete trace is visible as such. Bean-level by design: it reports which beans are reachable from the handler's controller, not which methods call which. On hub-heavy codebases a full trace can run to 150+ hops, so the tool takes optional shaping parameters: `maxDepth` bounds the walk (a cut-off trace carries `truncated: true` — it never masquerades as complete), and `terminalsOnly` omits the hop list, returning just the persistence boundary and blocked sites.
 
 `transactionalBoundaries` answers the question `@Transactional` annotations alone cannot:
 
@@ -125,7 +125,6 @@ The server communicates over stdio, so it's launched as a subprocess by the MCP 
 ## Roadmap
 
 - **Method-level tracing**: `traceEndpoint` is bean-level; following actual call chains (which service method a handler invokes) needs call-graph analysis
-- **Trace shaping**: depth/direction filters for `traceEndpoint` on hub-heavy codebases (a single endpoint can legitimately reach 50+ terminals)
 - **Transactional attributes**: surface `propagation`/`readOnly` values, and `@Transactional` semantics on interface-declared methods
 - **Provider-style injection**: `ObjectProvider<X>` / `Optional<X>` sites
 - **Distribution**: publish via jbang; evaluate a GraalVM native image once the Spring AI MCP starter's native support is verified
