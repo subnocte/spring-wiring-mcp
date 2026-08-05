@@ -4,6 +4,7 @@ import io.github.subnocte.springwiring.bean.BeanEdge;
 import io.github.subnocte.springwiring.bean.BeanIndex;
 import io.github.subnocte.springwiring.endpoint.EndpointIndex;
 import io.github.subnocte.springwiring.endpoint.UnresolvedMapping;
+import io.github.subnocte.springwiring.index.CodeIndexes;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -29,7 +30,7 @@ class EndpointResolverToolsTest {
                 EndpointResolverToolsTest.class.getResource("/sample-project")).toURI());
         index = EndpointIndex.forRoot(root);
         beanIndex = BeanIndex.forRoot(root);
-        tools = new EndpointResolverTools(index, beanIndex);
+        tools = new EndpointResolverTools(CodeIndexes.forRoot(root));
     }
 
     @Test

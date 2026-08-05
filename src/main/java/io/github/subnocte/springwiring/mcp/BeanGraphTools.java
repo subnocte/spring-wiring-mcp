@@ -4,6 +4,7 @@ import io.github.subnocte.springwiring.bean.BeanDefinition;
 import io.github.subnocte.springwiring.bean.BeanDependencies;
 import io.github.subnocte.springwiring.bean.BeanEdge;
 import io.github.subnocte.springwiring.bean.BeanIndex;
+import io.github.subnocte.springwiring.index.CodeIndexes;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Service;
@@ -17,10 +18,10 @@ import java.util.Optional;
 @Service
 public class BeanGraphTools {
 
-    private final BeanIndex beanIndex;
+    private final CodeIndexes codeIndexes;
 
-    public BeanGraphTools(BeanIndex beanIndex) {
-        this.beanIndex = beanIndex;
+    public BeanGraphTools(CodeIndexes codeIndexes) {
+        this.codeIndexes = codeIndexes;
     }
 
     @McpTool(
@@ -50,6 +51,7 @@ public class BeanGraphTools {
                     required = true)
             String className
     ) {
+        BeanIndex beanIndex = codeIndexes.current().beanIndex();
         List<BeanDefinition> matches = beanIndex.findByName(className);
         if (matches.isEmpty()) {
             return BeanDependencyResult.notFound(
@@ -88,6 +90,7 @@ public class BeanGraphTools {
                     + "name if unique", required = true)
             String className
     ) {
+        BeanIndex beanIndex = codeIndexes.current().beanIndex();
         List<String> matches = beanIndex.findTypeByName(className);
         if (matches.isEmpty()) {
             return new BeanDependentsResult(false, null, List.of(), List.of(),

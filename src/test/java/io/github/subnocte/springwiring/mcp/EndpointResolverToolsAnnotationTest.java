@@ -26,7 +26,7 @@ class EndpointResolverToolsAnnotationTest {
     void resolveEndpointToolDeclaresReadOnlySemantics() throws URISyntaxException {
         Path root = Path.of(Objects.requireNonNull(
                 getClass().getResource("/sample-project")).toURI());
-        EndpointResolverTools tools = new EndpointResolverTools(EndpointIndex.forRoot(root), BeanIndex.forRoot(root));
+        EndpointResolverTools tools = new EndpointResolverTools(io.github.subnocte.springwiring.index.CodeIndexes.forRoot(root));
 
         List<SyncToolSpecification> specs = new SyncMcpToolProvider(List.of(tools)).getToolSpecifications();
 

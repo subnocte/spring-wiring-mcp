@@ -25,7 +25,7 @@ class BeanGraphToolsTest {
         Path root = Path.of(Objects.requireNonNull(
                 BeanGraphToolsTest.class.getResource("/sample-project")).toURI());
         BeanIndex beanIndex = BeanIndex.forRoot(root);
-        tools = new BeanGraphTools(beanIndex);
+        tools = new BeanGraphTools(io.github.subnocte.springwiring.index.CodeIndexes.forRoot(root));
     }
 
     @Test

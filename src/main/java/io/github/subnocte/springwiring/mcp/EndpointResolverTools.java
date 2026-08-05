@@ -4,6 +4,7 @@ import io.github.subnocte.springwiring.bean.BeanIndex;
 import io.github.subnocte.springwiring.endpoint.EndpointHandler;
 import io.github.subnocte.springwiring.endpoint.EndpointIndex;
 import io.github.subnocte.springwiring.endpoint.UnresolvedMapping;
+import io.github.subnocte.springwiring.index.CodeIndexes;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Service;
@@ -21,12 +22,10 @@ public class EndpointResolverTools {
 
     private static final int SUGGESTION_LIMIT = 5;
 
-    private final EndpointIndex endpointIndex;
-    private final BeanIndex beanIndex;
+    private final CodeIndexes codeIndexes;
 
-    public EndpointResolverTools(EndpointIndex endpointIndex, BeanIndex beanIndex) {
-        this.endpointIndex = endpointIndex;
-        this.beanIndex = beanIndex;
+    public EndpointResolverTools(CodeIndexes codeIndexes) {
+        this.codeIndexes = codeIndexes;
     }
 
     @McpTool(
@@ -56,6 +55,7 @@ public class EndpointResolverTools {
             @McpToolParam(description = "Request path, e.g. /users/42", required = true)
             String path
     ) {
+        EndpointIndex endpointIndex = codeIndexes.current().endpointIndex();
         List<UnresolvedMapping> unresolved = endpointIndex.unresolved();
         Optional<EndpointHandler> match = endpointIndex.resolve(method, path);
         if (match.isPresent()) {
@@ -81,6 +81,9 @@ public class EndpointResolverTools {
             )
     )
     public IndexStatus indexStatus() {
+        CodeIndexes.Snapshot snapshot = codeIndexes.current();
+        EndpointIndex endpointIndex = snapshot.endpointIndex();
+        BeanIndex beanIndex = snapshot.beanIndex();
         List<UnresolvedMapping> unresolved = endpointIndex.unresolved();
         Map<String, Long> byReason = unresolved.stream()
                 .collect(Collectors.groupingBy(UnresolvedMapping::reason, Collectors.counting()));
