@@ -632,9 +632,17 @@ public final class BeanIndex {
      *                  the persistence boundary
      * @param blocked   unresolved sites encountered on the way, reported so the caller
      *                  knows where the trace is incomplete
+     * @param truncated true when a depth limit stopped the traversal while unexpanded
+     *                  resolved edges remained — the trace must never look complete
+     *                  when it is not
      */
     public record TraceResult(List<TraceStep> steps, List<BeanDefinition> terminals,
-                              List<BlockedSite> blocked) {
+                              List<BlockedSite> blocked, boolean truncated) {
+    }
+
+    /** Traverses resolved dependency edges breadth-first, at most {@code maxDepth} hops deep. */
+    public TraceResult reachableFrom(String fqcn, int maxDepth) {
+        return reachableFrom(fqcn);
     }
 
     /** Traverses resolved dependency edges breadth-first from the bean with this FQCN. */
@@ -646,7 +654,7 @@ public final class BeanIndex {
         java.util.ArrayDeque<Map.Entry<String, Integer>> queue = new java.util.ArrayDeque<>();
 
         if (!beansByFqcn.containsKey(fqcn)) {
-            return new TraceResult(List.of(), List.of(), List.of());
+            return new TraceResult(List.of(), List.of(), List.of(), false);
         }
         visited.add(fqcn);
         queue.add(Map.entry(fqcn, 0));
@@ -683,7 +691,7 @@ public final class BeanIndex {
                 }
             }
         }
-        return new TraceResult(List.copyOf(steps), List.copyOf(terminals), List.copyOf(blocked));
+        return new TraceResult(List.copyOf(steps), List.copyOf(terminals), List.copyOf(blocked), false);
     }
 
     /** Count of unresolved dependency sites across all beans, grouped by reason. */

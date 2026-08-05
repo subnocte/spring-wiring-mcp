@@ -106,7 +106,10 @@ public class EndpointResolverTools {
                     + "to the persistence boundary (MyBatis mappers / Spring Data repositories). Bean-"
                     + "level, not method-level: it reports which beans are reachable from the handler's "
                     + "controller, not which methods actually call which. Unresolved sites encountered "
-                    + "on the way are listed as blocked, so an incomplete trace is visible as such.",
+                    + "on the way are listed as blocked, so an incomplete trace is visible as such. On "
+                    + "hub-heavy codebases a full trace can be large: maxDepth limits how deep to walk "
+                    + "(truncated=true marks a cut-off trace), terminalsOnly=true omits the hop list and "
+                    + "returns just the persistence boundary and blocked sites.",
             annotations = @McpTool.McpAnnotations(
                     title = "Trace endpoint to persistence boundary",
                     readOnlyHint = true,
@@ -119,18 +122,30 @@ public class EndpointResolverTools {
             @McpToolParam(description = "HTTP method, e.g. GET, POST, PUT, DELETE, PATCH", required = true)
             String method,
             @McpToolParam(description = "Request path, e.g. /users/42", required = true)
-            String path
+            String path,
+            @McpToolParam(description = "Maximum hops to walk from the controller (1 = direct "
+                    + "dependencies only). Omit for a full trace; truncated=true in the result "
+                    + "marks a trace this limit cut off.", required = false)
+            Integer maxDepth,
+            @McpToolParam(description = "true to omit the hop list and return only the reached "
+                    + "persistence boundary (terminals) and blocked sites", required = false)
+            Boolean terminalsOnly
     ) {
         CodeIndexes.Snapshot snapshot = codeIndexes.current();
         Optional<EndpointHandler> match = snapshot.endpointIndex().resolve(method, path);
         if (match.isEmpty()) {
-            return new EndpointTrace(false, null, List.of(), List.of(), List.of(),
+            return new EndpointTrace(false, null, List.of(), List.of(), List.of(), false,
                     "No indexed route matches " + method + " " + path
                             + "; use resolveEndpoint for close-match suggestions.");
         }
-        BeanIndex.TraceResult trace = snapshot.beanIndex().reachableFrom(match.get().fqcn());
-        return new EndpointTrace(true, match.get(), trace.steps(), trace.terminals(),
-                trace.blocked(), null);
+        BeanIndex.TraceResult trace = maxDepth == null
+                ? snapshot.beanIndex().reachableFrom(match.get().fqcn())
+                : snapshot.beanIndex().reachableFrom(match.get().fqcn(), maxDepth);
+        List<BeanIndex.TraceStep> steps = Boolean.TRUE.equals(terminalsOnly)
+                ? List.of()
+                : trace.steps();
+        return new EndpointTrace(true, match.get(), steps, trace.terminals(),
+                trace.blocked(), trace.truncated(), null);
     }
 
     /** Result payload of {@link #traceEndpoint}. */
@@ -140,6 +155,7 @@ public class EndpointResolverTools {
             List<BeanIndex.TraceStep> steps,
             List<io.github.subnocte.springwiring.bean.BeanDefinition> terminals,
             List<BeanIndex.BlockedSite> blocked,
+            boolean truncated,
             String error
     ) {
     }

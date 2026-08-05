@@ -88,7 +88,7 @@ class EndpointResolverToolsTest {
 
     @Test
     void traceEndpointWalksToTerminals() {
-        var trace = tools.traceEndpoint("GET", "/notifications");
+        var trace = tools.traceEndpoint("GET", "/notifications", null, null);
 
         assertThat(trace.found()).isTrue();
         assertThat(trace.handler().fqcn()).isEqualTo("com.example.sample.beans.NotificationController");
@@ -100,9 +100,37 @@ class EndpointResolverToolsTest {
 
     @Test
     void traceEndpointMissIsReported() {
-        var trace = tools.traceEndpoint("GET", "/nope");
+        var trace = tools.traceEndpoint("GET", "/nope", null, null);
 
         assertThat(trace.found()).isFalse();
         assertThat(trace.error()).contains("resolveEndpoint");
+    }
+
+    @Test
+    void traceEndpointMaxDepthCutsOffAndSelfReportsTruncation() {
+        var trace = tools.traceEndpoint("GET", "/notifications", 1, null);
+
+        // depth 1 = the controller's direct dependencies only
+        assertThat(trace.steps()).hasSize(1);
+        assertThat(trace.steps().get(0).to().fqcn())
+                .isEqualTo("com.example.sample.beans.NotificationService");
+        // NotificationService's own edges were never walked: the result must say so
+        assertThat(trace.truncated()).isTrue();
+
+        var full = tools.traceEndpoint("GET", "/notifications", 10, null);
+        assertThat(full.truncated()).isFalse();
+        assertThat(full.steps().size())
+                .isEqualTo(tools.traceEndpoint("GET", "/notifications", null, null).steps().size());
+    }
+
+    @Test
+    void traceEndpointTerminalsOnlyOmitsHops() {
+        var trace = tools.traceEndpoint("GET", "/notifications", null, true);
+
+        assertThat(trace.steps()).isEmpty();
+        assertThat(trace.terminals())
+                .extracting(io.github.subnocte.springwiring.bean.BeanDefinition::fqcn)
+                .contains("com.example.sample.beans.AuditMapper");
+        assertThat(trace.truncated()).isFalse();
     }
 }
