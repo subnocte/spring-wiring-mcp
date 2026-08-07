@@ -99,7 +99,7 @@ class EndpointResolverToolsRootRefTest {
     }
 
     @Test
-    void rootParameterSwitchesTheAnalyzedCodebase(@TempDir Path otherRoot) throws IOException {
+    void rootParameterSwitchesTheAnalyzedCodebase(@TempDir Path otherRoot) throws Exception {
         writeAlphaController(otherRoot);
         EndpointResolverTools tools = toolsOver(sampleProjectRoot());
 

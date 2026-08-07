@@ -89,7 +89,7 @@ class BeanGraphToolsRootRefTest {
     }
 
     @Test
-    void rootParameterSwitchesTheAnalyzedCodebase(@TempDir Path otherRoot) throws IOException {
+    void rootParameterSwitchesTheAnalyzedCodebase(@TempDir Path otherRoot) throws Exception {
         writeAlphaService(otherRoot);
         BeanGraphTools tools = toolsOver(sampleProjectRoot());
 

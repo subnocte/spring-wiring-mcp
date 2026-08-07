@@ -94,7 +94,7 @@ class TransactionToolsRootRefTest {
     }
 
     @Test
-    void rootParameterSwitchesTheAnalyzedCodebase(@TempDir Path otherRoot) throws IOException {
+    void rootParameterSwitchesTheAnalyzedCodebase(@TempDir Path otherRoot) throws Exception {
         writeAlphaService(otherRoot);
         TransactionTools tools = toolsOver(sampleProjectRoot());
 
