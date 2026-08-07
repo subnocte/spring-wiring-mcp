@@ -1,5 +1,6 @@
 package io.github.subnocte.springwiring.ref;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -33,7 +34,15 @@ class RefMaterializerTest {
     @TempDir
     Path refsBase;
 
-    private final RefMaterializer materializer = new RefMaterializer(refsBase);
+    private RefMaterializer materializer;
+
+    @BeforeEach
+    void createMaterializer() {
+        // Must not be a field initializer: JUnit5 injects @TempDir instance fields via a
+        // post-processor that runs after the constructor, so refsBase is still null at
+        // field-initialization time.
+        materializer = new RefMaterializer(refsBase);
+    }
 
     private static void run(Path dir, String... command) throws IOException, InterruptedException {
         Process process = new ProcessBuilder(command).directory(dir.toFile()).redirectErrorStream(true).start();
