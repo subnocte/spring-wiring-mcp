@@ -87,4 +87,56 @@ class SourceScannerTest {
         assertThatThrownBy(() -> SourceScanner.scan(root.resolve("missing")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void scanTestSourcesCollectsOnlyTestSourceSets() throws IOException {
+        touch("src/main/java/com/example/A.java");
+        Path test = touch("src/test/java/com/example/ATest.java");
+        Path integrationTest = touch("src/integrationTest/java/com/example/AIT.java");
+        Path testFixture = touch("src/testFixtures/java/com/example/Fixture.java");
+
+        assertThat(SourceScanner.scanTestSources(root))
+                .containsExactlyInAnyOrder(
+                        test.toAbsolutePath(), integrationTest.toAbsolutePath(), testFixture.toAbsolutePath());
+    }
+
+    @Test
+    void scanTestSourcesSkipsBuildOutputAndHiddenDirectories() throws IOException {
+        Path kept = touch("src/test/java/com/example/ATest.java");
+        touch("build/generated/com/example/test/Gen.java");
+        touch(".git/objects/test/Fake.java");
+
+        assertThat(SourceScanner.scanTestSources(root)).containsExactly(kept.toAbsolutePath());
+    }
+
+    @Test
+    void scanTestSourcesDoesNotSkipTestLikeNamesOutsideSrc() throws IOException {
+        // only "src/<something containing test>" is a test source set; a package literally
+        // named "test" under src/main must still be excluded from the test-source scan
+        touch("src/main/java/com/example/test/A.java");
+
+        assertThat(SourceScanner.scanTestSources(root)).isEmpty();
+    }
+
+    @Test
+    void scanTestSourcesRejectsNonDirectoryRoot() {
+        assertThatThrownBy(() -> SourceScanner.scanTestSources(root.resolve("missing")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void isTestSourceFileAcceptsOnlyTestSourceSets() {
+        assertThat(SourceScanner.isTestSourceFile(Path.of("src/test/java/com/example/ATest.java"))).isTrue();
+        assertThat(SourceScanner.isTestSourceFile(Path.of("src/integrationTest/java/com/example/AIT.java")))
+                .isTrue();
+        assertThat(SourceScanner.isTestSourceFile(Path.of("src/main/java/com/example/A.java"))).isFalse();
+        assertThat(SourceScanner.isTestSourceFile(Path.of("src/main/java/com/example/test/A.java"))).isFalse();
+        assertThat(SourceScanner.isTestSourceFile(Path.of("README.md"))).isFalse();
+    }
+
+    @Test
+    void isTestSourceFileRejectsBuildOutputAndHiddenDirectoriesEvenUnderATestSourceSet() {
+        assertThat(SourceScanner.isTestSourceFile(Path.of("src/test/java/build/Fake.java"))).isFalse();
+        assertThat(SourceScanner.isTestSourceFile(Path.of(".git/src/test/Fake.java"))).isFalse();
+    }
 }
