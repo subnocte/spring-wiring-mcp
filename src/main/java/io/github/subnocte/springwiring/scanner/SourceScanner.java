@@ -72,6 +72,47 @@ public final class SourceScanner {
     }
 
     /**
+     * Walks {@code root} and returns every regular file this project's test-wiring
+     * analysis treats as a test source: a {@code .java} file under a test source set
+     * ({@code src/<name containing "test">}, e.g. {@code src/test}, {@code src/integrationTest},
+     * {@code src/testFixtures}), subject to the same hidden-directory and build-output
+     * exclusions as {@link #scan}. The inverse selection of {@link #scan}: a file is
+     * collected by at most one of the two methods.
+     *
+     * @param root directory to scan; must exist
+     * @return sorted list of absolute paths to test source files
+     */
+    public static List<Path> scanTestSources(Path root) {
+        if (!Files.isDirectory(root)) {
+            throw new IllegalArgumentException("Not a directory: " + root);
+        }
+        List<Path> sources = new ArrayList<>();
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    if (!dir.equals(root) && isHiddenOrBuildOutput(dir.getFileName().toString())) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (attrs.isRegularFile() && isTestSourceFile(root.relativize(file))) {
+                        sources.add(file.toAbsolutePath());
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to scan test source root: " + root, e);
+        }
+        sources.sort(null);
+        return List.copyOf(sources);
+    }
+
+    /**
      * Whether a path, relative to some analysis root, is one this scanner would collect
      * from that root: a {@code .java} file not under a hidden directory, a build output /
      * dependency directory ({@code build}, {@code target}, {@code out}, {@code bin},
@@ -105,9 +146,39 @@ public final class SourceScanner {
         return true;
     }
 
+    /**
+     * The inverse selection of {@link #isSourceFile}: whether a path, relative to some
+     * analysis root, is a {@code .java} file this project's test-wiring analysis would
+     * collect from that root — under a test source set ({@code src/<name containing
+     * "test">}), subject to the same hidden-directory and build-output exclusions.
+     *
+     * @param relativePath a path relative to the (unspecified here) analysis root; must
+     *                      not itself be the root
+     */
+    public static boolean isTestSourceFile(Path relativePath) {
+        Path fileName = relativePath.getFileName();
+        if (fileName == null || !fileName.toString().endsWith(".java")) {
+            return false;
+        }
+        int dirSegmentCount = relativePath.getNameCount() - 1;
+        boolean underTestSourceSet = false;
+        for (int i = 0; i < dirSegmentCount; i++) {
+            String segment = relativePath.getName(i).toString();
+            if (segment.startsWith(".") || EXCLUDED_DIR_NAMES.contains(segment)) {
+                return false;
+            }
+            if (i > 0
+                    && relativePath.getName(i - 1).toString().equals("src")
+                    && segment.toLowerCase(Locale.ROOT).contains("test")) {
+                underTestSourceSet = true;
+            }
+        }
+        return underTestSourceSet;
+    }
+
     private static boolean isExcluded(Path dir) {
         String name = dir.getFileName().toString();
-        if (name.startsWith(".") || EXCLUDED_DIR_NAMES.contains(name)) {
+        if (isHiddenOrBuildOutput(name)) {
             return true;
         }
         Path parent = dir.getParent();
@@ -115,5 +186,10 @@ public final class SourceScanner {
                 && parent.getFileName() != null
                 && parent.getFileName().toString().equals("src")
                 && name.toLowerCase(Locale.ROOT).contains("test");
+    }
+
+    /** Hidden-directory / build-output-directory check shared by {@link #scan} and {@link #scanTestSources}. */
+    private static boolean isHiddenOrBuildOutput(String dirName) {
+        return dirName.startsWith(".") || EXCLUDED_DIR_NAMES.contains(dirName);
     }
 }
