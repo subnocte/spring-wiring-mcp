@@ -22,9 +22,12 @@ import java.util.zip.ZipInputStream;
 /**
  * The only place in this project that knows git. Resolves a ref to an immutable commit SHA
  * in a caller-supplied repository, then materializes that SHA's analyzable sources (as
- * {@link SourceScanner#isSourceFile(Path)} defines "analyzable") onto local disk under
- * {@code <refsBaseDir>/<sha>/} so {@link io.github.subnocte.springwiring.index.CodeIndexesRegistry}
- * can index it like any other directory.
+ * {@link SourceScanner#isSourceFile(Path)} or {@link SourceScanner#isTestSourceFile(Path)}
+ * define "analyzable" — both production and test sources, so a materialized ref can feed
+ * either index) onto local disk under {@code <refsBaseDir>/<sha>/} so
+ * {@link io.github.subnocte.springwiring.index.CodeIndexesRegistry} and
+ * {@link io.github.subnocte.springwiring.index.TestIndexesRegistry} can index it like any
+ * other directory.
  *
  * <p>A SHA is immutable, so once materialized a directory is reused forever (until LRU
  * eviction); the ref name itself is never cached as a key — every call re-resolves it with
@@ -214,7 +217,7 @@ public final class RefMaterializer {
         // git archive entry names always use '/' regardless of OS; Path.of splits on the
         // platform separator, which is '/' on every platform this server targets.
         Path relative = Path.of(entry.getName());
-        if (!SourceScanner.isSourceFile(relative)) {
+        if (!SourceScanner.isSourceFile(relative) && !SourceScanner.isTestSourceFile(relative)) {
             return;
         }
         Path target = destDir.resolve(relative).normalize();
