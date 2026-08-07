@@ -1,12 +1,7 @@
 package io.github.subnocte.springwiring.index;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -22,6 +17,9 @@ import java.util.Optional;
  * <p>This class knows nothing about git or refs — that translation lives one layer up,
  * in the ref materializer that turns a git ref into a plain directory before calling
  * {@link #forRoot(Path)}.
+ *
+ * <p>Thin, public-surface-preserving specialization of {@link IndexRegistry} for
+ * {@link CodeIndexes}, built eagerly at construction (a bad startup root fails fast).
  */
 public final class CodeIndexesRegistry {
 
@@ -44,77 +42,35 @@ public final class CodeIndexesRegistry {
     public record Failure(String reason) implements Lookup {
     }
 
-    private final Path defaultRoot;
-    private final int maxRoots;
-
-    /** Access-ordered so the eldest entry (iteration order) is the least recently used. */
-    private final LinkedHashMap<Path, CodeIndexes> cache =
-            new LinkedHashMap<>(16, 0.75f, true);
+    private final IndexRegistry<CodeIndexes> delegate;
 
     public CodeIndexesRegistry(Path defaultRoot) {
         this(defaultRoot, DEFAULT_MAX_ROOTS);
     }
 
     public CodeIndexesRegistry(Path defaultRoot, int maxRoots) {
-        this.maxRoots = maxRoots;
-        this.defaultRoot = normalize(defaultRoot);
         // Eager, like the pre-registry single-root behavior: a bad startup root should
         // fail fast at construction rather than surface as a mysterious first-call error.
-        cache.put(this.defaultRoot, CodeIndexes.forRoot(this.defaultRoot));
+        this.delegate = new IndexRegistry<>(defaultRoot, maxRoots, CodeIndexes::forRoot, true);
     }
 
     public Path defaultRoot() {
-        return defaultRoot;
+        return delegate.defaultRoot();
     }
 
     /**
      * Returns the cached {@link CodeIndexes} for {@code root}, building it on first
-     * request. If accepting this root would push the cache past {@link #maxRoots}, the
-     * least recently used root other than {@link #defaultRoot()} is evicted and reported
-     * in {@link Success#notices()}.
+     * request. If accepting this root would push the cache past {@link #DEFAULT_MAX_ROOTS}
+     * (or the constructor-supplied {@code maxRoots}), the least recently used root other
+     * than {@link #defaultRoot()} is evicted and reported in {@link Success#notices()}.
      */
     public synchronized Lookup forRoot(Path root) {
-        Path normalized = normalize(root);
-        Optional<String> invalid = validate(normalized);
-        if (invalid.isPresent()) {
-            return new Failure(invalid.get());
-        }
-
-        // cache.get() (not computeIfAbsent) so a hit is recorded as the most recently
-        // used entry: HashMap.computeIfAbsent bypasses LinkedHashMap's access-order
-        // bookkeeping on a hit, which would silently break the LRU eviction below.
-        CodeIndexes indexes = cache.get(normalized);
-        boolean isNew = indexes == null;
-        if (isNew) {
-            indexes = CodeIndexes.forRoot(normalized);
-            cache.put(normalized, indexes);
-        }
-
-        List<String> notices = new ArrayList<>();
-        if (isNew && cache.size() > maxRoots) {
-            evictOneLeastRecentlyUsed(normalized).ifPresent(evicted ->
-                    notices.add("Evicted root " + evicted + " (spring-wiring.max-roots=" + maxRoots
-                            + " exceeded)"));
-        }
-        return new Success(indexes, normalized, notices);
+        return toLookup(delegate.forRoot(root));
     }
 
     /** All roots currently cached: the default plus any additional roots or materialized refs. */
     public synchronized List<Path> knownRoots() {
-        return List.copyOf(cache.keySet());
-    }
-
-    private Optional<Path> evictOneLeastRecentlyUsed(Path justAdded) {
-        Iterator<Path> it = cache.keySet().iterator();
-        while (it.hasNext()) {
-            Path candidate = it.next();
-            if (!candidate.equals(defaultRoot) && !candidate.equals(justAdded)) {
-                it.remove();
-                return Optional.of(candidate);
-            }
-        }
-        // Only the default root and the entry just added exist: nothing evictable.
-        return Optional.empty();
+        return delegate.knownRoots();
     }
 
     /**
@@ -124,16 +80,14 @@ public final class CodeIndexesRegistry {
      * duplicating it.
      */
     public static Optional<String> validate(Path root) {
-        if (!Files.exists(root)) {
-            return Optional.of("Root does not exist: " + root);
-        }
-        if (!Files.isDirectory(root)) {
-            return Optional.of("Root is not a directory: " + root);
-        }
-        return Optional.empty();
+        return IndexRegistry.validate(root);
     }
 
-    private static Path normalize(Path path) {
-        return path.toAbsolutePath().normalize();
+    private static Lookup toLookup(IndexRegistry.Lookup<CodeIndexes> lookup) {
+        if (lookup instanceof IndexRegistry.Failure<CodeIndexes> failure) {
+            return new Failure(failure.reason());
+        }
+        IndexRegistry.Success<CodeIndexes> success = (IndexRegistry.Success<CodeIndexes>) lookup;
+        return new Success(success.indexes(), success.root(), success.notices());
     }
 }

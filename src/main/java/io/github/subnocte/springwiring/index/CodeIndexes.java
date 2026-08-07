@@ -5,14 +5,8 @@ import io.github.subnocte.springwiring.endpoint.EndpointIndex;
 import io.github.subnocte.springwiring.scanner.SourceScanner;
 import io.github.subnocte.springwiring.tx.TransactionalIndex;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Holder for the endpoint and bean indexes that keeps them consistent with the sources
@@ -20,6 +14,9 @@ import java.util.Map;
  * size) and rebuilds both indexes before answering when anything changed. Tool results
  * are therefore always based on the code as it is at call time — a stale index would be
  * silently wrong, which this project's contract forbids.
+ *
+ * <p>Thin, public-surface-preserving specialization of {@link FreshIndexes} for
+ * production sources: scans via {@link SourceScanner#scan} and builds via {@link #build}.
  */
 public final class CodeIndexes {
 
@@ -28,37 +25,20 @@ public final class CodeIndexes {
                            TransactionalIndex transactionalIndex) {
     }
 
-    /** What "unchanged" means per file: same size and same modification time. */
-    private record FileStamp(long size, long modifiedMillis) {
-        static FileStamp of(Path file) {
-            try {
-                BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class);
-                return new FileStamp(attrs.size(), attrs.lastModifiedTime().toMillis());
-            } catch (IOException e) {
-                throw new UncheckedIOException("Failed to stat source file: " + file, e);
-            }
-        }
-    }
+    private final FreshIndexes<Snapshot> delegate;
 
-    private final Path root;
-    private Map<Path, FileStamp> fingerprint;
-    private Snapshot snapshot;
-
-    private CodeIndexes(Path root, Map<Path, FileStamp> fingerprint, Snapshot snapshot) {
-        this.root = root;
-        this.fingerprint = fingerprint;
-        this.snapshot = snapshot;
+    private CodeIndexes(FreshIndexes<Snapshot> delegate) {
+        this.delegate = delegate;
     }
 
     /** Builds the initial indexes eagerly, like the previous startup behavior. */
     public static CodeIndexes forRoot(Path root) {
-        List<Path> files = SourceScanner.scan(root);
-        return new CodeIndexes(root, fingerprintOf(files), build(files));
+        return new CodeIndexes(FreshIndexes.forRoot(root, SourceScanner::scan, CodeIndexes::build));
     }
 
     /** The directory this instance indexes. */
     public Path root() {
-        return root;
+        return delegate.root();
     }
 
     /**
@@ -66,26 +46,12 @@ public final class CodeIndexes {
      * modified since the last build. Unchanged sources return the same snapshot instance;
      * the staleness check itself is a directory walk plus one stat per file.
      */
-    public synchronized Snapshot current() {
-        List<Path> files = SourceScanner.scan(root);
-        Map<Path, FileStamp> fresh = fingerprintOf(files);
-        if (!fresh.equals(fingerprint)) {
-            snapshot = build(files);
-            fingerprint = fresh;
-        }
-        return snapshot;
+    public Snapshot current() {
+        return delegate.current();
     }
 
     private static Snapshot build(List<Path> files) {
         return new Snapshot(EndpointIndex.build(files), BeanIndex.build(files),
                 TransactionalIndex.build(files));
-    }
-
-    private static Map<Path, FileStamp> fingerprintOf(List<Path> files) {
-        Map<Path, FileStamp> stamps = new HashMap<>();
-        for (Path file : files) {
-            stamps.put(file, FileStamp.of(file));
-        }
-        return stamps;
     }
 }
