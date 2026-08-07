@@ -58,7 +58,7 @@ public final class SourceScanner {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    if (attrs.isRegularFile() && file.toString().endsWith(".java")) {
+                    if (attrs.isRegularFile() && isSourceFile(root.relativize(file))) {
                         sources.add(file.toAbsolutePath());
                     }
                     return FileVisitResult.CONTINUE;
@@ -69,6 +69,40 @@ public final class SourceScanner {
         }
         sources.sort(null);
         return List.copyOf(sources);
+    }
+
+    /**
+     * Whether a path, relative to some analysis root, is one this scanner would collect
+     * from that root: a {@code .java} file not under a hidden directory, a build output /
+     * dependency directory ({@code build}, {@code target}, {@code out}, {@code bin},
+     * {@code node_modules}), or a test source set ({@code src/<name containing "test">}).
+     *
+     * <p>This is the single definition of "analyzable file" for the project: other
+     * components that materialize sources from somewhere other than a plain directory
+     * (for example extracting a {@code git archive} into a temp directory) filter through
+     * this method instead of keeping their own, potentially drifting, copy of these rules.
+     *
+     * @param relativePath a path relative to the (unspecified here) analysis root; must
+     *                      not itself be the root
+     */
+    public static boolean isSourceFile(Path relativePath) {
+        Path fileName = relativePath.getFileName();
+        if (fileName == null || !fileName.toString().endsWith(".java")) {
+            return false;
+        }
+        int dirSegmentCount = relativePath.getNameCount() - 1;
+        for (int i = 0; i < dirSegmentCount; i++) {
+            String segment = relativePath.getName(i).toString();
+            if (segment.startsWith(".") || EXCLUDED_DIR_NAMES.contains(segment)) {
+                return false;
+            }
+            if (i > 0
+                    && relativePath.getName(i - 1).toString().equals("src")
+                    && segment.toLowerCase(Locale.ROOT).contains("test")) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean isExcluded(Path dir) {
