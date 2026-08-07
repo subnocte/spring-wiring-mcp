@@ -136,9 +136,11 @@ class RefMaterializerTest {
 
         assertThat(containsFileNamed(directory, "PingController.java")).isTrue();
         assertThat(containsFileNamed(directory, "README.md")).isFalse();
-        // excluded by SourceScanner: build output and test source sets, even though .java
+        // excluded by SourceScanner: build output, even though it ends in .java
         assertThat(containsFileNamed(directory, "GhostController.java")).isFalse();
-        assertThat(containsFileNamed(directory, "TestOnlyController.java")).isFalse();
+        // test source sets ARE extracted (isSourceFile OR isTestSourceFile): testWiring
+        // needs to analyze a ref's test sources, not just its production sources.
+        assertThat(containsFileNamed(directory, "TestOnlyController.java")).isTrue();
     }
 
     @Test
