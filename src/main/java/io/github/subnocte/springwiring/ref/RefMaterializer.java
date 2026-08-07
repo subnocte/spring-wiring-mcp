@@ -91,6 +91,11 @@ public final class RefMaterializer {
         this.gitCommand = gitCommand;
     }
 
+    /** The directory materialized ref generations are stored under. */
+    public Path refsBaseDirectory() {
+        return refsBaseDir;
+    }
+
     /**
      * Resolves {@code ref} to a commit SHA in the repository at {@code repoRoot} and
      * returns a local directory holding that commit's analyzable sources, extracting it

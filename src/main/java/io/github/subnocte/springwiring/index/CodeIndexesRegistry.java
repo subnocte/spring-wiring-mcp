@@ -117,7 +117,13 @@ public final class CodeIndexesRegistry {
         return Optional.empty();
     }
 
-    private static Optional<String> validate(Path root) {
+    /**
+     * Whether {@code root} could be handed to {@link #forRoot(Path)} successfully. Exposed
+     * so callers that need to validate a root before doing something else with it first
+     * (e.g. resolving a git ref against it) can reuse this exact check instead of
+     * duplicating it.
+     */
+    public static Optional<String> validate(Path root) {
         if (!Files.exists(root)) {
             return Optional.of("Root does not exist: " + root);
         }

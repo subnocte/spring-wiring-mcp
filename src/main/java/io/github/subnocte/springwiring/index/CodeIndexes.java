@@ -56,6 +56,11 @@ public final class CodeIndexes {
         return new CodeIndexes(root, fingerprintOf(files), build(files));
     }
 
+    /** The directory this instance indexes. */
+    public Path root() {
+        return root;
+    }
+
     /**
      * The current snapshot, rebuilt first if any scanned file was added, removed, or
      * modified since the last build. Unchanged sources return the same snapshot instance;

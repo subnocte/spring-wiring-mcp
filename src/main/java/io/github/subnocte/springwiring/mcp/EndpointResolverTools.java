@@ -7,6 +7,7 @@ import io.github.subnocte.springwiring.endpoint.UnresolvedMapping;
 import io.github.subnocte.springwiring.index.CodeIndexes;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -22,10 +23,28 @@ public class EndpointResolverTools {
 
     private static final int SUGGESTION_LIMIT = 5;
 
-    private final CodeIndexes codeIndexes;
+    private static final String ROOT_PARAM_DESCRIPTION = "Directory to analyze instead of "
+            + "this server's startup code.root. Absolute path.";
+    private static final String REF_PARAM_DESCRIPTION = "Git ref (branch, tag, or commit) to "
+            + "analyze instead of the working tree, resolved in the repository at the "
+            + "effective root (root, or code.root if omitted). Re-resolved on every call, so "
+            + "a moved branch is picked up without restarting the server. The response's "
+            + "resolvedCommit reports exactly which commit was used.";
 
+    private final RootRefResolver resolver;
+
+    /**
+     * Single-root construction predating root/ref support: root/ref parameters left at
+     * their default (both omitted) behave exactly as before; supplying either is reported
+     * as unsupported. Kept for callers that only ever analyze one fixed codebase.
+     */
     public EndpointResolverTools(CodeIndexes codeIndexes) {
-        this.codeIndexes = codeIndexes;
+        this(RootRefResolver.fixed(codeIndexes));
+    }
+
+    @Autowired
+    public EndpointResolverTools(RootRefResolver resolver) {
+        this.resolver = resolver;
     }
 
     @McpTool(
@@ -53,16 +72,29 @@ public class EndpointResolverTools {
             @McpToolParam(description = "HTTP method, e.g. GET, POST, PUT, DELETE, PATCH", required = true)
             String method,
             @McpToolParam(description = "Request path, e.g. /users/42", required = true)
-            String path
+            String path,
+            @McpToolParam(description = ROOT_PARAM_DESCRIPTION, required = false)
+            String root,
+            @McpToolParam(description = REF_PARAM_DESCRIPTION, required = false)
+            String ref
     ) {
-        EndpointIndex endpointIndex = codeIndexes.current().endpointIndex();
+        RootRefResolver.Result resolution = resolver.resolve(root, ref);
+        if (resolution instanceof RootRefResolver.Failure failure) {
+            return EndpointResolution.rootError(failure.reason());
+        }
+        RootRefResolver.Success success = (RootRefResolver.Success) resolution;
+        EndpointIndex endpointIndex = success.indexes().current().endpointIndex();
         List<UnresolvedMapping> unresolved = endpointIndex.unresolved();
         Optional<EndpointHandler> match = endpointIndex.resolve(method, path);
-        if (match.isPresent()) {
-            return EndpointResolution.found(match.get(), unresolved.size());
-        }
-        List<EndpointHandler> suggestions = endpointIndex.suggestClosest(method, path, SUGGESTION_LIMIT);
-        return EndpointResolution.notFound(suggestions, unresolved);
+        EndpointResolution result = match.isPresent()
+                ? EndpointResolution.found(match.get(), unresolved.size())
+                : EndpointResolution.notFound(endpointIndex.suggestClosest(method, path, SUGGESTION_LIMIT), unresolved);
+        return result.withRootInfo(success.resolvedCommit(), success.notices());
+    }
+
+    /** Legacy overload: root and ref both omitted, identical to pre-root/ref behavior. */
+    public EndpointResolution resolveEndpoint(String method, String path) {
+        return resolveEndpoint(method, path, null, null);
     }
 
     @McpTool(
@@ -80,8 +112,18 @@ public class EndpointResolverTools {
                     openWorldHint = false
             )
     )
-    public IndexStatus indexStatus() {
-        CodeIndexes.Snapshot snapshot = codeIndexes.current();
+    public IndexStatus indexStatus(
+            @McpToolParam(description = ROOT_PARAM_DESCRIPTION, required = false)
+            String root,
+            @McpToolParam(description = REF_PARAM_DESCRIPTION, required = false)
+            String ref
+    ) {
+        RootRefResolver.Result resolution = resolver.resolve(root, ref);
+        if (resolution instanceof RootRefResolver.Failure failure) {
+            return IndexStatus.rootError(failure.reason(), resolver.knownRoots());
+        }
+        RootRefResolver.Success success = (RootRefResolver.Success) resolution;
+        CodeIndexes.Snapshot snapshot = success.indexes().current();
         EndpointIndex endpointIndex = snapshot.endpointIndex();
         BeanIndex beanIndex = snapshot.beanIndex();
         List<UnresolvedMapping> unresolved = endpointIndex.unresolved();
@@ -96,7 +138,16 @@ public class EndpointResolverTools {
                 beanIndex.allBeans().size(),
                 beanIndex.unresolvedInjectionCountByReason(),
                 endpointIndex.parseFailures().size(),
-                endpointIndex.parseFailures());
+                endpointIndex.parseFailures(),
+                success.resolvedCommit(),
+                success.notices(),
+                null,
+                resolver.knownRoots());
+    }
+
+    /** Legacy overload: root and ref both omitted, identical to pre-root/ref behavior. */
+    public IndexStatus indexStatus() {
+        return indexStatus(null, null);
     }
 
     @McpTool(
@@ -129,26 +180,49 @@ public class EndpointResolverTools {
             Integer maxDepth,
             @McpToolParam(description = "true to omit the hop list and return only the reached "
                     + "persistence boundary (terminals) and blocked sites", required = false)
-            Boolean terminalsOnly
+            Boolean terminalsOnly,
+            @McpToolParam(description = ROOT_PARAM_DESCRIPTION, required = false)
+            String root,
+            @McpToolParam(description = REF_PARAM_DESCRIPTION, required = false)
+            String ref
     ) {
-        CodeIndexes.Snapshot snapshot = codeIndexes.current();
-        Optional<EndpointHandler> match = snapshot.endpointIndex().resolve(method, path);
-        if (match.isEmpty()) {
-            return new EndpointTrace(false, null, List.of(), List.of(), List.of(), false,
-                    "No indexed route matches " + method + " " + path
-                            + "; use resolveEndpoint for close-match suggestions.");
+        RootRefResolver.Result resolution = resolver.resolve(root, ref);
+        if (resolution instanceof RootRefResolver.Failure failure) {
+            return EndpointTrace.rootError(failure.reason());
         }
-        BeanIndex.TraceResult trace = maxDepth == null
-                ? snapshot.beanIndex().reachableFrom(match.get().fqcn())
-                : snapshot.beanIndex().reachableFrom(match.get().fqcn(), maxDepth);
-        List<BeanIndex.TraceStep> steps = Boolean.TRUE.equals(terminalsOnly)
-                ? List.of()
-                : trace.steps();
-        return new EndpointTrace(true, match.get(), steps, trace.terminals(),
-                trace.blocked(), trace.truncated(), null);
+        RootRefResolver.Success success = (RootRefResolver.Success) resolution;
+        CodeIndexes.Snapshot snapshot = success.indexes().current();
+        Optional<EndpointHandler> match = snapshot.endpointIndex().resolve(method, path);
+        EndpointTrace result;
+        if (match.isEmpty()) {
+            result = new EndpointTrace(false, null, List.of(), List.of(), List.of(), false,
+                    "No indexed route matches " + method + " " + path
+                            + "; use resolveEndpoint for close-match suggestions.",
+                    null, List.of(), null);
+        } else {
+            BeanIndex.TraceResult trace = maxDepth == null
+                    ? snapshot.beanIndex().reachableFrom(match.get().fqcn())
+                    : snapshot.beanIndex().reachableFrom(match.get().fqcn(), maxDepth);
+            List<BeanIndex.TraceStep> steps = Boolean.TRUE.equals(terminalsOnly)
+                    ? List.of()
+                    : trace.steps();
+            result = new EndpointTrace(true, match.get(), steps, trace.terminals(),
+                    trace.blocked(), trace.truncated(), null, null, List.of(), null);
+        }
+        return result.withRootInfo(success.resolvedCommit(), success.notices());
     }
 
-    /** Result payload of {@link #traceEndpoint}. */
+    /** Legacy overload: root and ref both omitted, identical to pre-root/ref behavior. */
+    public EndpointTrace traceEndpoint(String method, String path, Integer maxDepth, Boolean terminalsOnly) {
+        return traceEndpoint(method, path, maxDepth, terminalsOnly, null, null);
+    }
+
+    /**
+     * Result payload of {@link #traceEndpoint}. {@code resolvedCommit}/{@code rootNotices}
+     * are populated only via the root/ref-aware overload; {@code rootError} is set instead
+     * of every other field when root/ref resolution itself failed (a bad root/ref is not
+     * the same failure mode as "no indexed route matches", which stays in {@code error}).
+     */
     public record EndpointTrace(
             boolean found,
             EndpointHandler handler,
@@ -156,14 +230,28 @@ public class EndpointResolverTools {
             List<io.github.subnocte.springwiring.bean.BeanDefinition> terminals,
             List<BeanIndex.BlockedSite> blocked,
             boolean truncated,
-            String error
+            String error,
+            ResolvedCommit resolvedCommit,
+            List<String> rootNotices,
+            String rootError
     ) {
+        static EndpointTrace rootError(String reason) {
+            return new EndpointTrace(false, null, List.of(), List.of(), List.of(), false, null,
+                    null, List.of(), reason);
+        }
+
+        EndpointTrace withRootInfo(ResolvedCommit resolvedCommit, List<String> rootNotices) {
+            return new EndpointTrace(found, handler, steps, terminals, blocked, truncated, error,
+                    resolvedCommit, rootNotices, rootError);
+        }
     }
 
     /**
      * Result payload of {@link #resolveEndpoint}. {@code unresolvedCount} is always present;
      * the full {@code unresolvedMappings} list and {@code warning} are only populated on a
      * miss, where an unresolved mapping might be the endpoint the caller was looking for.
+     * {@code rootError} is set instead of every other field when root/ref resolution itself
+     * failed, which is distinct from a domain miss (no such endpoint).
      */
     public record EndpointResolution(
             boolean found,
@@ -171,21 +259,39 @@ public class EndpointResolverTools {
             List<EndpointHandler> suggestions,
             int unresolvedCount,
             List<UnresolvedMapping> unresolvedMappings,
-            String warning
+            String warning,
+            ResolvedCommit resolvedCommit,
+            List<String> rootNotices,
+            String rootError
     ) {
         static EndpointResolution found(EndpointHandler handler, int unresolvedCount) {
-            return new EndpointResolution(true, handler, List.of(), unresolvedCount, List.of(), null);
+            return new EndpointResolution(true, handler, List.of(), unresolvedCount, List.of(), null,
+                    null, List.of(), null);
         }
 
         static EndpointResolution notFound(List<EndpointHandler> suggestions, List<UnresolvedMapping> unresolved) {
             String warning = unresolved.isEmpty() ? null
                     : "No indexed route matched, but " + unresolved.size() + " mapping(s) could not be "
                     + "resolved statically; the requested endpoint may be among them (see unresolvedMappings).";
-            return new EndpointResolution(false, null, suggestions, unresolved.size(), unresolved, warning);
+            return new EndpointResolution(false, null, suggestions, unresolved.size(), unresolved, warning,
+                    null, List.of(), null);
+        }
+
+        static EndpointResolution rootError(String reason) {
+            return new EndpointResolution(false, null, List.of(), 0, List.of(), null, null, List.of(), reason);
+        }
+
+        EndpointResolution withRootInfo(ResolvedCommit resolvedCommit, List<String> rootNotices) {
+            return new EndpointResolution(found, match, suggestions, unresolvedCount, unresolvedMappings, warning,
+                    resolvedCommit, rootNotices, rootError);
         }
     }
 
-    /** Result payload of {@link #indexStatus}. */
+    /**
+     * Result payload of {@link #indexStatus}. {@code knownRoots} is always populated
+     * (independent of whether this call's own root/ref resolved); {@code rootError} is set
+     * instead of every coverage field when root/ref resolution itself failed.
+     */
     public record IndexStatus(
             int endpointCount,
             int scannedFileCount,
@@ -195,7 +301,15 @@ public class EndpointResolverTools {
             int beanCount,
             Map<String, Long> unresolvedInjectionsByReason,
             int parseFailureCount,
-            List<io.github.subnocte.springwiring.scanner.ParseFailure> parseFailures
+            List<io.github.subnocte.springwiring.scanner.ParseFailure> parseFailures,
+            ResolvedCommit resolvedCommit,
+            List<String> rootNotices,
+            String rootError,
+            List<KnownRoot> knownRoots
     ) {
+        static IndexStatus rootError(String reason, List<KnownRoot> knownRoots) {
+            return new IndexStatus(0, 0, 0, Map.of(), List.of(), 0, Map.of(), 0, List.of(),
+                    null, List.of(), reason, knownRoots);
+        }
     }
 }

@@ -7,6 +7,7 @@ import io.github.subnocte.springwiring.bean.BeanIndex;
 import io.github.subnocte.springwiring.index.CodeIndexes;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -18,10 +19,28 @@ import java.util.Optional;
 @Service
 public class BeanGraphTools {
 
-    private final CodeIndexes codeIndexes;
+    private static final String ROOT_PARAM_DESCRIPTION = "Directory to analyze instead of "
+            + "this server's startup code.root. Absolute path.";
+    private static final String REF_PARAM_DESCRIPTION = "Git ref (branch, tag, or commit) to "
+            + "analyze instead of the working tree, resolved in the repository at the "
+            + "effective root (root, or code.root if omitted). Re-resolved on every call, so "
+            + "a moved branch is picked up without restarting the server. The response's "
+            + "resolvedCommit reports exactly which commit was used.";
 
+    private final RootRefResolver resolver;
+
+    /**
+     * Single-root construction predating root/ref support: root/ref parameters left at
+     * their default (both omitted) behave exactly as before; supplying either is reported
+     * as unsupported. Kept for callers that only ever analyze one fixed codebase.
+     */
     public BeanGraphTools(CodeIndexes codeIndexes) {
-        this.codeIndexes = codeIndexes;
+        this(RootRefResolver.fixed(codeIndexes));
+    }
+
+    @Autowired
+    public BeanGraphTools(RootRefResolver resolver) {
+        this.resolver = resolver;
     }
 
     @McpTool(
@@ -49,22 +68,38 @@ public class BeanGraphTools {
     public BeanDependencyResult beanDependencies(
             @McpToolParam(description = "Bean class: fully qualified name, or a simple name if unique",
                     required = true)
-            String className
+            String className,
+            @McpToolParam(description = ROOT_PARAM_DESCRIPTION, required = false)
+            String root,
+            @McpToolParam(description = REF_PARAM_DESCRIPTION, required = false)
+            String ref
     ) {
-        BeanIndex beanIndex = codeIndexes.current().beanIndex();
+        RootRefResolver.Result resolution = resolver.resolve(root, ref);
+        if (resolution instanceof RootRefResolver.Failure failure) {
+            return BeanDependencyResult.rootError(failure.reason());
+        }
+        RootRefResolver.Success success = (RootRefResolver.Success) resolution;
+        BeanIndex beanIndex = success.indexes().current().beanIndex();
         List<BeanDefinition> matches = beanIndex.findByName(className);
+        BeanDependencyResult result;
         if (matches.isEmpty()) {
-            return BeanDependencyResult.notFound(
+            result = BeanDependencyResult.notFound(
                     "No scanned bean named '" + className + "'. It may be a library bean, "
                             + "a non-bean class, or outside CODE_ROOT.");
+        } else if (matches.size() > 1) {
+            result = BeanDependencyResult.ambiguous(matches);
+        } else {
+            Optional<BeanDependencies> deps = beanIndex.dependenciesOf(matches.get(0).fqcn());
+            result = deps.map(BeanDependencyResult::found)
+                    .orElseGet(() -> BeanDependencyResult.notFound(
+                            "Bean '" + matches.get(0).fqcn() + "' has no analyzed dependencies."));
         }
-        if (matches.size() > 1) {
-            return BeanDependencyResult.ambiguous(matches);
-        }
-        Optional<BeanDependencies> deps = beanIndex.dependenciesOf(matches.get(0).fqcn());
-        return deps.map(BeanDependencyResult::found)
-                .orElseGet(() -> BeanDependencyResult.notFound(
-                        "Bean '" + matches.get(0).fqcn() + "' has no analyzed dependencies."));
+        return result.withRootInfo(success.resolvedCommit(), success.notices());
+    }
+
+    /** Legacy overload: root and ref both omitted, identical to pre-root/ref behavior. */
+    public BeanDependencyResult beanDependencies(String className) {
+        return beanDependencies(className, null, null);
     }
 
     @McpTool(
@@ -88,58 +123,103 @@ public class BeanGraphTools {
     public BeanDependentsResult beanDependents(
             @McpToolParam(description = "Bean class or interface: fully qualified name, or a simple "
                     + "name if unique", required = true)
-            String className
+            String className,
+            @McpToolParam(description = ROOT_PARAM_DESCRIPTION, required = false)
+            String root,
+            @McpToolParam(description = REF_PARAM_DESCRIPTION, required = false)
+            String ref
     ) {
-        BeanIndex beanIndex = codeIndexes.current().beanIndex();
+        RootRefResolver.Result resolution = resolver.resolve(root, ref);
+        if (resolution instanceof RootRefResolver.Failure failure) {
+            return BeanDependentsResult.rootError(failure.reason());
+        }
+        RootRefResolver.Success success = (RootRefResolver.Success) resolution;
+        BeanIndex beanIndex = success.indexes().current().beanIndex();
         List<String> matches = beanIndex.findTypeByName(className);
+        BeanDependentsResult result;
         if (matches.isEmpty()) {
-            return new BeanDependentsResult(false, null, List.of(), List.of(),
+            result = new BeanDependentsResult(false, null, List.of(), List.of(),
                     "No scanned type named '" + className + "' is referenced by any bean. It may be "
-                            + "a library type, unused, or outside CODE_ROOT.");
+                            + "a library type, unused, or outside CODE_ROOT.",
+                    null, List.of(), null);
+        } else if (matches.size() > 1) {
+            result = new BeanDependentsResult(false, null, List.of(), matches,
+                    "Simple name matches " + matches.size() + " types; retry with a fully qualified name.",
+                    null, List.of(), null);
+        } else {
+            result = new BeanDependentsResult(true, matches.get(0),
+                    beanIndex.dependentsOf(matches.get(0)), List.of(), null, null, List.of(), null);
         }
-        if (matches.size() > 1) {
-            return new BeanDependentsResult(false, null, List.of(), matches,
-                    "Simple name matches " + matches.size() + " types; retry with a fully qualified name.");
-        }
-        return new BeanDependentsResult(true, matches.get(0),
-                beanIndex.dependentsOf(matches.get(0)), List.of(), null);
+        return result.withRootInfo(success.resolvedCommit(), success.notices());
+    }
+
+    /** Legacy overload: root and ref both omitted, identical to pre-root/ref behavior. */
+    public BeanDependentsResult beanDependents(String className) {
+        return beanDependents(className, null, null);
     }
 
     /**
      * Result payload of {@link #beanDependents}. On an ambiguous simple name,
-     * {@code matches} lists the FQCNs to retry with.
+     * {@code matches} lists the FQCNs to retry with. {@code rootError} is set instead of
+     * every other field when root/ref resolution itself failed.
      */
     public record BeanDependentsResult(
             boolean found,
             String targetFqcn,
             List<BeanIndex.Dependent> dependents,
             List<String> matches,
-            String error
+            String error,
+            ResolvedCommit resolvedCommit,
+            List<String> rootNotices,
+            String rootError
     ) {
+        static BeanDependentsResult rootError(String reason) {
+            return new BeanDependentsResult(false, null, List.of(), List.of(), null, null, List.of(), reason);
+        }
+
+        BeanDependentsResult withRootInfo(ResolvedCommit resolvedCommit, List<String> rootNotices) {
+            return new BeanDependentsResult(found, targetFqcn, dependents, matches, error,
+                    resolvedCommit, rootNotices, rootError);
+        }
     }
 
     /**
      * Result payload of {@link #beanDependencies}. On an ambiguous simple name,
-     * {@code matches} lists the FQCNs to retry with.
+     * {@code matches} lists the FQCNs to retry with. {@code rootError} is set instead of
+     * every other field when root/ref resolution itself failed.
      */
     public record BeanDependencyResult(
             boolean found,
             BeanDefinition bean,
             List<BeanEdge> edges,
             List<BeanDefinition> matches,
-            String error
+            String error,
+            ResolvedCommit resolvedCommit,
+            List<String> rootNotices,
+            String rootError
     ) {
         static BeanDependencyResult found(BeanDependencies deps) {
-            return new BeanDependencyResult(true, deps.bean(), deps.edges(), List.of(), null);
+            return new BeanDependencyResult(true, deps.bean(), deps.edges(), List.of(), null,
+                    null, List.of(), null);
         }
 
         static BeanDependencyResult notFound(String error) {
-            return new BeanDependencyResult(false, null, List.of(), List.of(), error);
+            return new BeanDependencyResult(false, null, List.of(), List.of(), error, null, List.of(), null);
         }
 
         static BeanDependencyResult ambiguous(List<BeanDefinition> matches) {
             return new BeanDependencyResult(false, null, List.of(), matches,
-                    "Simple name matches " + matches.size() + " beans; retry with a fully qualified name.");
+                    "Simple name matches " + matches.size() + " beans; retry with a fully qualified name.",
+                    null, List.of(), null);
+        }
+
+        static BeanDependencyResult rootError(String reason) {
+            return new BeanDependencyResult(false, null, List.of(), List.of(), null, null, List.of(), reason);
+        }
+
+        BeanDependencyResult withRootInfo(ResolvedCommit resolvedCommit, List<String> rootNotices) {
+            return new BeanDependencyResult(found, bean, edges, matches, error,
+                    resolvedCommit, rootNotices, rootError);
         }
     }
 }
