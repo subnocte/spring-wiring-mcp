@@ -72,6 +72,27 @@ Anything the static analysis cannot resolve is reported, never guessed and never
 - the `indexStatus` tool returns all of this coverage up front: endpoint count, bean count, scanned file count, unresolved mappings, unresolved injections by reason, and parse failures — call it first to know how much to trust the index for a given project
 - when `resolveEndpoint` misses, the response includes the unresolved mappings alongside the close-match suggestions, since the endpoint you're looking for may be among them
 
+## Analyzing other directories and refs (`root` / `ref`)
+
+Every tool above (`resolveEndpoint`, `indexStatus`, `traceEndpoint`, `beanDependencies`, `beanDependents`, `transactionalBoundaries`) also accepts two optional parameters, so an agent isn't limited to the one codebase the server happened to start against:
+
+- `root` — an absolute path to a directory to analyze instead of the server's startup `CODE_ROOT`. Its own `CodeIndexes` is built lazily on first use and cached for reuse.
+- `ref` — a git branch, tag, or commit to analyze instead of the working tree, resolved in the repository at the *effective* root (`root`, or `CODE_ROOT` if omitted). Internally this resolves the ref to a commit SHA with `git rev-parse`, extracts that commit's sources with `git archive` into a local scratch directory, and analyzes that directory — the checked-out working tree is never touched. The ref name itself is **never** cached: it is re-resolved on every call, so a branch that moved (e.g. after a `git fetch`) is picked up on the next call without restarting the server. This project never fetches on your behalf — if a remote branch moved and you haven't fetched, `ref` resolves against what you last fetched.
+
+`root` and `ref` are independent and freely composable — asking for `ref` alone analyzes that commit in `CODE_ROOT`'s repository; adding `root` analyzes that commit in a different repository instead. Whenever `ref` is supplied, the response carries `resolvedCommit` (the requested ref, the SHA it resolved to, and that commit's timestamp), so you can tell exactly which snapshot the answer came from.
+
+> "What does `GET /orders/{id}` look like on `origin/develop`, without touching my working tree?"
+
+is one `traceEndpoint` call with `ref: "origin/develop"` — no `git checkout`, no stashing uncommitted work.
+
+Bad input is always self-reported rather than silently misinterpreted: an invalid `root` or an unresolvable `ref` comes back as `rootError` on the response (distinct from a domain miss like "no such endpoint" or "no such bean"), with the reason inline (e.g. what `git rev-parse` said). `indexStatus` additionally reports `knownRoots` — every directory currently cached, tagged `default` / `root` / `ref` — so you can see how much ad hoc usage has accumulated in the server's lifetime.
+
+Both caches are bounded so a long-running server doesn't grow forever: at most `spring-wiring.max-roots` directories (default 8, including `CODE_ROOT`, which is never evicted) and `spring-wiring.max-ref-generations` materialized commits (default 5) are kept, LRU-evicting past that. Both are Spring properties, overridable the same way as `code.root` (`--spring-wiring.max-roots=16`, or the matching `SPRING_WIRING_MAX_ROOTS` environment variable).
+
+### Trust model
+
+This server has no sandboxing around `root`: it is designed to run locally over stdio under your own OS user account, the same trust boundary as any other local MCP server or CLI tool you'd run yourself. `root` accepts any absolute path the process's user can read — there is no allowlist and no confinement to a subtree of `CODE_ROOT`. `ref` shells out to the `git` binary on `PATH` via `ProcessBuilder` (never through a shell, so ref names are never subject to shell interpretation) against the repository at the effective root; it does not fetch, push, or write to that repository. Materialized ref snapshots are written under `java.io.tmpdir`. If you would not run `git archive` or read arbitrary paths yourself in this environment, don't grant an agent unattended access to this server either.
+
 ## Installation
 
 Requires Java 21. The server itself runs on Spring Boot 4.1 with Spring AI 2.0 (MCP Server starter), but that only concerns the server's own runtime — the codebase being analyzed is parsed as plain source with JavaParser, so Spring Boot 3.x (or any Spring MVC) projects are perfectly valid analysis targets.
@@ -86,7 +107,7 @@ This produces `build/libs/spring-wiring-mcp.jar`.
 
 ## Connecting to Claude Code / Claude Desktop
 
-The server communicates over stdio, so it's launched as a subprocess by the MCP client rather than run as a standalone service. Point `CODE_ROOT` at the Spring Boot codebase you want indexed — a repository root is fine, monorepo included: the scanner prunes hidden directories (`.git`, `.gradle`, …), build output and dependency trees (`build/`, `target/`, `out/`, `bin/`, `node_modules/`), and test source sets (`src/test`, `src/integrationTest`, `src/testFixtures`), so only production sources are indexed.
+The server communicates over stdio, so it's launched as a subprocess by the MCP client rather than run as a standalone service. Point `CODE_ROOT` at the Spring Boot codebase you want indexed by default — a repository root is fine, monorepo included: the scanner prunes hidden directories (`.git`, `.gradle`, …), build output and dependency trees (`build/`, `target/`, `out/`, `bin/`, `node_modules/`), and test source sets (`src/test`, `src/integrationTest`, `src/testFixtures`), so only production sources are indexed. `CODE_ROOT` is just the default: the `root` and `ref` tool parameters (see above) can point any individual call at a different directory or git ref without restarting the server.
 
 ### Claude Code (`.mcp.json` or `claude mcp add`)
 
@@ -120,7 +141,7 @@ The server communicates over stdio, so it's launched as a subprocess by the MCP 
 }
 ```
 
-`CODE_ROOT` can also be supplied as a command-line argument instead of an environment variable: `--code.root=/absolute/path/to/target-spring-boot-project` (Spring Boot's relaxed property binding maps both to the same `code.root` property). The index is built at startup and held in memory, and stays consistent with the sources: every tool call checks a cheap per-file fingerprint (path, size, mtime) and rebuilds the index before answering if anything under `CODE_ROOT` was added, edited, or deleted — answers always reflect the code on disk at call time.
+`CODE_ROOT` can also be supplied as a command-line argument instead of an environment variable: `--code.root=/absolute/path/to/target-spring-boot-project` (Spring Boot's relaxed property binding maps both to the same `code.root` property). The default root's index is built at startup and held in memory, and stays consistent with the sources: every tool call checks a cheap per-file fingerprint (path, size, mtime) and rebuilds the index before answering if anything under `CODE_ROOT` was added, edited, or deleted — answers always reflect the code on disk at call time. The same freshness check applies to any directory reached via `root`; a directory materialized from `ref` never needs it, since a commit's contents are immutable once resolved.
 
 ## Roadmap
 
