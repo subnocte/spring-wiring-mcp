@@ -72,9 +72,39 @@ Anything the static analysis cannot resolve is reported, never guessed and never
 - the `indexStatus` tool returns all of this coverage up front: endpoint count, bean count, scanned file count, unresolved mappings, unresolved injections by reason, and parse failures — call it first to know how much to trust the index for a given project
 - when `resolveEndpoint` misses, the response includes the unresolved mappings alongside the close-match suggestions, since the endpoint you're looking for may be among them
 
+## Test-side wiring (Milestone 4: `testWiring` / `testDoubleUsage`)
+
+Everything above resolves *production* wiring. `testWiring` and `testDoubleUsage` do the same for the test side — the boundary that decides which of a test's collaborators are the real thing and which are stand-ins:
+
+> "What does `CheckoutServiceTest` mock, and what's the real subject under test?"
+
+`testWiring` resolves one JUnit5 test class (fully-qualified name, or a unique simple name) to its declared wiring:
+- `realSubjects` — types built as the real thing: `@InjectMocks` fields, or `new X(...)` assigned in a field initializer or a `@BeforeEach` method (so plain constructor-injection-style tests, with no Mockito extension at all, are still seen)
+- `mocked` — test doubles: `@Mock` / `@Spy` / `@MockBean` / `@SpyBean` / `@MockitoBean` / `@MockitoSpyBean` fields, or `mock(X.class)` / `spy(...)` calls, each kind-tagged
+- `staticMocks` — types frozen via `mockStatic(X.class)`, with the scope it's frozen in: a method name, `@BeforeEach`, or a field
+- `slice` — the class's Spring test-slice annotations (`@SpringBootTest`, `@WebMvcTest(controllers = ...)`, etc.) and `@ExtendWith` contents
+- `unresolved` — declarations it couldn't classify, with a reason, never guessed (an annotation whose import doesn't match the known type, a `mockStatic` argument that isn't a class literal)
+
+`@Nested` classes are aggregated under the top-level class rather than reported separately: each declaration carries the nested scope it was found in, and a `@Mock` declared on the *outer* class is recorded once at the top level — it still covers every `@Nested` test, matching JUnit5's real behavior, instead of being invisible to them or duplicated per nested class.
+
+`testDoubleUsage` is the reverse lookup:
+
+> "Which tests mock `PaymentGateway`, and which ones treat it as real?"
+
+returns three declaration-based buckets for a queried type — `realSubject`, `mocked`, `staticMocked` — plus `unclassifiedContextTests`: Spring context-slice tests (`@SpringBootTest`, `@WebMvcTest`, etc.) whose declarations never mention the type at all. Absence from that list is *not* proof of safety — whether a Spring context actually wires the type at runtime is out of scope for a static analysis, so these are self-reported as unclassified rather than assumed unaffected.
+
+This is deliberately named "test-side wiring," not "Mockito support": a test double is the test-time replacement for Spring wiring, the same concept the production tools above resolve, just declared differently. And it is a *declaration* analysis, same discipline as everything else in this project — `testWiring`/`testDoubleUsage` never claim a Spring context actually starts, or that a test actually exercises the path it appears to.
+
+### Out of scope for v1
+
+- Local-variable `mock(X.class)` — only field-level test doubles are tracked.
+- JUnit4 / TestNG — JUnit5 constructs only; other frameworks simply produce no wiring (not reported as "unsupported").
+- `@Configuration` / `@TestConfiguration` bean-override *resolution* — detecting and classifying exactly which bean an override replaces is future work.
+- Context reality — whether a Spring context actually starts, and which beans it actually wires at runtime, is never modeled; this is a static analysis of what the test source declares, nothing more.
+
 ## Analyzing other directories and refs (`root` / `ref`)
 
-Every tool above (`resolveEndpoint`, `indexStatus`, `traceEndpoint`, `beanDependencies`, `beanDependents`, `transactionalBoundaries`) also accepts two optional parameters, so an agent isn't limited to the one codebase the server happened to start against:
+Every tool above (`resolveEndpoint`, `indexStatus`, `traceEndpoint`, `beanDependencies`, `beanDependents`, `transactionalBoundaries`, `testWiring`, `testDoubleUsage`) also accepts two optional parameters, so an agent isn't limited to the one codebase the server happened to start against:
 
 - `root` — an absolute path to a directory to analyze instead of the server's startup `CODE_ROOT`. Its own `CodeIndexes` is built lazily on first use and cached for reuse.
 - `ref` — a git branch, tag, or commit to analyze instead of the working tree, resolved in the repository at the *effective* root (`root`, or `CODE_ROOT` if omitted). Internally this resolves the ref to a commit SHA with `git rev-parse`, extracts that commit's sources with `git archive` into a local scratch directory, and analyzes that directory — the checked-out working tree is never touched. The ref name itself is **never** cached: it is re-resolved on every call, so a branch that moved (e.g. after a `git fetch`) is picked up on the next call without restarting the server. This project never fetches on your behalf — if a remote branch moved and you haven't fetched, `ref` resolves against what you last fetched.
@@ -87,7 +117,7 @@ is one `traceEndpoint` call with `ref: "origin/develop"` — no `git checkout`, 
 
 Bad input is always self-reported rather than silently misinterpreted: an invalid `root` or an unresolvable `ref` comes back as `rootError` on the response (distinct from a domain miss like "no such endpoint" or "no such bean"), with the reason inline (e.g. what `git rev-parse` said). `indexStatus` additionally reports `knownRoots` — every directory currently cached, tagged `default` / `root` / `ref` — so you can see how much ad hoc usage has accumulated in the server's lifetime.
 
-Both caches are bounded so a long-running server doesn't grow forever: at most `spring-wiring.max-roots` directories (default 8, including `CODE_ROOT`, which is never evicted) and `spring-wiring.max-ref-generations` materialized commits (default 5) are kept, LRU-evicting past that. Both are Spring properties, overridable the same way as `code.root` (`--spring-wiring.max-roots=16`, or the matching `SPRING_WIRING_MAX_ROOTS` environment variable).
+Both caches are bounded so a long-running server doesn't grow forever: at most `spring-wiring.max-roots` directories (default 8, including `CODE_ROOT`, which is never evicted) and `spring-wiring.max-ref-generations` materialized commits (default 5) are kept, LRU-evicting past that. Both are Spring properties, overridable the same way as `code.root` (`--spring-wiring.max-roots=16`, or the matching `SPRING_WIRING_MAX_ROOTS` environment variable). `testWiring`/`testDoubleUsage` share the production tools' `ref` cache (a materialized commit holds both production and test sources) and share the `spring-wiring.max-roots` cap on a separate, test-wiring-only cache — but that cache is built lazily, root by root, only once a test-wiring tool is actually called for it, rather than eagerly for `CODE_ROOT` at startup like the production index.
 
 ### Trust model
 
@@ -107,7 +137,7 @@ This produces `build/libs/spring-wiring-mcp.jar`.
 
 ## Connecting to Claude Code / Claude Desktop
 
-The server communicates over stdio, so it's launched as a subprocess by the MCP client rather than run as a standalone service. Point `CODE_ROOT` at the Spring Boot codebase you want indexed by default — a repository root is fine, monorepo included: the scanner prunes hidden directories (`.git`, `.gradle`, …), build output and dependency trees (`build/`, `target/`, `out/`, `bin/`, `node_modules/`), and test source sets (`src/test`, `src/integrationTest`, `src/testFixtures`), so only production sources are indexed. `CODE_ROOT` is just the default: the `root` and `ref` tool parameters (see above) can point any individual call at a different directory or git ref without restarting the server.
+The server communicates over stdio, so it's launched as a subprocess by the MCP client rather than run as a standalone service. Point `CODE_ROOT` at the Spring Boot codebase you want indexed by default — a repository root is fine, monorepo included: the scanner prunes hidden directories (`.git`, `.gradle`, …), build output and dependency trees (`build/`, `target/`, `out/`, `bin/`, `node_modules/`), and test source sets (`src/test`, `src/integrationTest`, `src/testFixtures`) from the *production* index, so `resolveEndpoint`/`beanDependencies`/etc. only ever see production sources. Those excluded test source sets are exactly what `testWiring`/`testDoubleUsage` analyze instead, via a separate index built lazily on first use. `CODE_ROOT` is just the default: the `root` and `ref` tool parameters (see above) can point any individual call at a different directory or git ref without restarting the server.
 
 ### Claude Code (`.mcp.json` or `claude mcp add`)
 
@@ -148,6 +178,8 @@ The server communicates over stdio, so it's launched as a subprocess by the MCP 
 - **Method-level tracing**: `traceEndpoint` is bean-level; following actual call chains (which service method a handler invokes) needs call-graph analysis
 - **Transactional attributes**: surface `propagation`/`readOnly` values, and `@Transactional` semantics on interface-declared methods
 - **Provider-style injection**: `ObjectProvider<X>` / `Optional<X>` sites
+- **`@TestConfiguration` override resolution**: `testWiring` detects and lists these, but doesn't yet resolve which bean an override replaces
+- **Local-variable test doubles**: `testWiring`/`testDoubleUsage` are field-only in v1
 - **Distribution**: publish via jbang; evaluate a GraalVM native image once the Spring AI MCP starter's native support is verified
 
 ## Demo
